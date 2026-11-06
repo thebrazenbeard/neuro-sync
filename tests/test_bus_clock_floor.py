@@ -398,6 +398,64 @@ class ClockFloorTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True}, "KNOWN LIMITATION: sidecar snapshot rollback")
         self.assertEqual(len(self.calls), 1)
 
+    def test_main_snapshot_rollback_must_not_replay_successfully_consumed_plan(self):
+        """An unchanged sidecar must not let restoring MAIN revive a used plan."""
+        owner = self.broker()
+        owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
+        # SQLite uses rollback journals for this broker. This is a bounded
+        # synthetic backup of the host-owned main DB, with no services.
+        main_before_effect = self.path.read_bytes()
+        owner.execute_plan("once", "first", KEY, plan=self.plan)
+        self.assertEqual(len(self.calls), 1)
+        high_water_before_restore = self.high_water()
+        self.path.write_bytes(main_before_effect)
+        self.assertEqual(self.high_water(), high_water_before_restore)
+        with self.assertRaises(ReadAccessDenied):
+            self.broker().execute_plan("once", "replayed", KEY, plan=self.plan)
+        self.assertEqual(len(self.calls), 1, "restored main must not repeat effect")
+
+    def test_existing_claimed_plan_is_migrated_into_sidecar_replay_journal(self):
+        owner = self.broker()
+        owner.grant_plan("legacy-consumed", KEY, plan=self.plan, expires_at_epoch=300)
+        owner.execute_plan("legacy-consumed", "old-invocation", KEY, plan=self.plan)
+        # Emulate an intact pre-journal READY authority. Code deploy must
+        # discover already consumed grants, without replaying their effects.
+        with sqlite3.connect(self.sidecar_path) as db:
+            db.execute("DROP TABLE consumed_plan_grants")
+            db.execute("ALTER TABLE clock_state DROP COLUMN consumption_journal_ready")
+        restored = self.broker()
+        with sqlite3.connect(self.sidecar_path) as db:
+            row = db.execute("SELECT invocation_id FROM consumed_plan_grants "
+                             "WHERE grant_id='legacy-consumed'").fetchone()
+        self.assertEqual(row, ("old-invocation",))
+        with self.assertRaises(ReadAccessDenied):
+            restored.execute_plan("legacy-consumed", "replayed", KEY, plan=self.plan)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_ready_journal_removed_after_consumption_is_not_recreated(self):
+        owner = self.broker()
+        owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
+        main_before_effect = self.path.read_bytes()
+        owner.execute_plan("once", "first", KEY, plan=self.plan)
+        self.assertEqual(len(self.calls), 1)
+        self.path.write_bytes(main_before_effect)
+        with sqlite3.connect(self.sidecar_path) as db:
+            db.execute("DROP TABLE consumed_plan_grants")
+        # Journal had been initialized: losing it must not reinitialize from
+        # a potentially rolled-back main authority snapshot.
+        with self.assertRaises(ReadAccessDenied):
+            self.broker().execute_plan("once", "replayed", KEY, plan=self.plan)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_sidecar_replay_journal_loss_fails_before_effect(self):
+        owner = self.broker()
+        owner.grant_plan("planned", KEY, plan=self.plan, expires_at_epoch=300)
+        with sqlite3.connect(self.sidecar_path) as db:
+            db.execute("DROP TABLE consumed_plan_grants")
+        with self.assertRaises(ReadAccessDenied):
+            owner.execute_plan("planned", "attempt", KEY, plan=self.plan)
+        self.assertEqual(self.calls, [], "missing journal must not run handler")
+
     def test_pending_zero_grant_bootstrap_can_finish_without_old_sidecar(self):
         self.broker()  # freshly bound empty authority
         with sqlite3.connect(self.path) as db:
