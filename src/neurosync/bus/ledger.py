@@ -281,6 +281,8 @@ class StateLedger:
     ) -> CommitReceipt:
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
+            if not self._verify_chain_db(db):
+                raise LedgerIntegrityError("cannot commit on inconsistent local chain")
             row = self._load_proposal(db, event_id)
             delta = StateDelta.from_json(row[3])
             if row[2] == "committed":
@@ -352,37 +354,52 @@ class StateLedger:
             return CommitReceipt(event_id, offset, delta.content_hash,
                                  chain_hash, next_revision, False)
 
+    def _verify_chain_db(self, db: sqlite3.Connection) -> bool:
+        rows = db.execute(
+            "SELECT event_offset,event_id,source_id,target_id,session_id,sequence,"
+            "payload_key,operation,content_hash,event_json,validation_sha256,"
+            "prev_hash,chain_hash,key_revision FROM events ORDER BY event_offset"
+        ).fetchall()
+        previous = GENESIS_HASH
+        last_offset = 0
+        for (offset, event_id, source, target, session, sequence, key, operation,
+             content_hash, encoded, validation_sha, prev, chain, revision) in rows:
+            delta = StateDelta.from_json(encoded)
+            if (delta.event_id != event_id or delta.content_hash != content_hash or
+                (source, target, session, sequence, key, operation) !=
+                (delta.source_id, delta.target_id, delta.session_id, delta.sequence,
+                 delta.payload["key"], delta.operation.value)):
+                return False
+            proposal = db.execute(
+                "SELECT validation_json,status,event_json,content_hash,source_id,"
+                "target_id,session_id,sequence,payload_key,commit_offset "
+                "FROM proposals WHERE event_id=?", (event_id,)
+            ).fetchone()
+            if proposal is None or proposal[1] != "committed" or not proposal[0]:
+                return False
+            if (proposal[2], proposal[3], proposal[4], proposal[5], proposal[6],
+                proposal[7], proposal[8], proposal[9]) != (
+                encoded, content_hash, source, target, session, sequence, key, offset
+            ):
+                return False
+            receipt = ValidationReceipt.from_json(proposal[0])
+            if receipt.proposal_hash != content_hash or receipt.evidence_sha256 != delta.evidence.sha256():
+                return False
+            if _sha_text(proposal[0]) != validation_sha or prev != previous:
+                return False
+            if chain != _chain_hash(prev, encoded, validation_sha, offset, revision):
+                return False
+            previous = chain
+            last_offset = offset
+        local_head = db.execute(
+            "SELECT head_offset,head_hash FROM ledger_head WHERE id=1"
+        ).fetchone()
+        return local_head == (last_offset, previous)
+
     def verify_chain(self) -> bool:
         try:
             with self._db() as db:
-                rows = db.execute(
-                    "SELECT event_offset,event_id,content_hash,event_json,validation_sha256,"
-                    "prev_hash,chain_hash,key_revision FROM events ORDER BY event_offset"
-                ).fetchall()
-                previous = GENESIS_HASH
-                last_offset = 0
-                for offset, event_id, content_hash, encoded, validation_sha, prev, chain, revision in rows:
-                    delta = StateDelta.from_json(encoded)
-                    if delta.event_id != event_id or delta.content_hash != content_hash:
-                        return False
-                    proposal = db.execute(
-                        "SELECT validation_json,status FROM proposals WHERE event_id=?", (event_id,)
-                    ).fetchone()
-                    if proposal is None or proposal[1] != "committed" or not proposal[0]:
-                        return False
-                    receipt = ValidationReceipt.from_json(proposal[0])
-                    if receipt.proposal_hash != content_hash or receipt.evidence_sha256 != delta.evidence.sha256():
-                        return False
-                    if _sha_text(proposal[0]) != validation_sha or prev != previous:
-                        return False
-                    if chain != _chain_hash(prev, encoded, validation_sha, offset, revision):
-                        return False
-                    previous = chain
-                    last_offset = offset
-                local_head = db.execute(
-                    "SELECT head_offset,head_hash FROM ledger_head WHERE id=1"
-                ).fetchone()
-                return local_head == (last_offset, previous)
+                return self._verify_chain_db(db)
         except (sqlite3.Error, SchemaError, ValueError, KeyError):
             return False
 

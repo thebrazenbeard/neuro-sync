@@ -310,6 +310,15 @@ class StateBusCoreTests(unittest.TestCase):
         with self.assertRaises(LedgerIntegrityError):
             self.ledger.project("node-B", "session-A")
 
+    def test_hash_chain_detects_changed_session_index_metadata(self):
+        self.complete(delta(value="not-for-session-B"))
+        with sqlite3.connect(self.path) as db:
+            db.execute("DROP TRIGGER events_no_update")
+            db.execute("UPDATE events SET session_id='session-B' WHERE event_offset=1")
+        self.assertFalse(self.ledger.verify_chain())
+        with self.assertRaises(LedgerIntegrityError):
+            self.ledger.project("node-B", "session-B")
+
     def test_read_limits(self):
         with self.assertRaises(ValueError):
             self.ledger.events("node-B", "session-A", limit=501)
