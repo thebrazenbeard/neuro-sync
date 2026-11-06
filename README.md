@@ -2,6 +2,8 @@
 
 **Status: research proposal and source-level experimental library — not a working distributed LLM-synchronization runtime.** The repository contains [`experiments/toy-transfer/`](experiments/toy-transfer/README.md), the strict [Trek SGD transfer experiment](experiments/trek-transfer-v0/README.md), and [scripted zero-weight/causal pilots](experiments/zero-weight-sync/README.md). These are **mechanical experiments**, not a deployed synchronization service or evidence of actual LLM-to-LLM knowledge transfer. See the [evidence-status ledger](docs/EXPERIMENT_STATUS.md) for what was actually executed, what failed hostile review, and which model experiments remain unrun.
 
+An optional [local real-receiver pilot harness](experiments/real-model-sync/README.md) now exists. One tightly bounded Granite 3.3 2B HTTP smoke on VN2 produced **four timeouts and zero completed plans**; this is an actual negative runtime-feasibility observation, **not** a Qwen synchronization result or a verdict on knowledge transfer. Exact source/model/receipt hashes and limitations are in the [evidence ledger](docs/EXPERIMENT_STATUS.md).
+
 For an exact map of implemented files, current small-library API, compatibility
 tiers, rights boundaries, and independent qualification requirements, read
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The committed
