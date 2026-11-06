@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -285,6 +286,97 @@ class HostOwnedEffectBrokerTests(unittest.TestCase):
         self.assertEqual(result, {"ok": True})
         self.assertEqual(receipt["status"], "ok")
         self.assertIsNotNone(owner.attempt("once"))
+
+    def test_bound_plan_rejects_swapped_intent_and_handler_after_grant(self):
+        owner = self.broker()
+        intended = "1" * 64
+        swapped = "2" * 64
+        owner.grant("bound", "capabilities.synthetic", expires_at_epoch=200,
+                    plan_sha256=intended)
+
+        for label, digest in (("omitted", None), ("swapped", swapped)):
+            with self.subTest(label=label), self.assertRaises(ReadAccessDenied):
+                owner.execute("bound", label, "capabilities.synthetic",
+                              plan_sha256=digest)
+            self.assertIsNone(owner.attempt(label))
+        replacement = HostOwnedEffectBroker(
+            self.path, self.ledger, context=self.context,
+            approved_handlers={"capabilities.synthetic": ApprovedEffect(
+                lambda _state: self.effects.append("unexpected"),
+                "c" * 64, "sha1:" + "b" * 40)},
+            clock=lambda: self.now)
+        with self.assertRaises(ReadAccessDenied):
+            replacement.execute("bound", "changed-handler", "capabilities.synthetic",
+                                plan_sha256=intended)
+        self.assertIsNone(owner.attempt("changed-handler"))
+        self.assertEqual(self.effects, [])
+
+        result, receipt = owner.execute("bound", "authorized", "capabilities.synthetic",
+                                        plan_sha256=intended)
+        self.assertEqual(result, {"sum": 5})
+        self.assertEqual(receipt["plan_sha256"], intended)
+        self.assertEqual(receipt["intent_binding_kind"], "host_asserted_plan_and_handler")
+        self.assertEqual(owner.attempt("authorized")["plan_sha256"], intended)
+
+    def test_existing_authority_migrates_without_regrant_or_replay_reset(self):
+        # Construct the pre-plan-binding tables, as in a persisted authority
+        # created by the old broker. A migration must not erase claims.
+        with sqlite3.connect(self.path) as db:
+            db.executescript("""
+                CREATE TABLE grants (
+                  grant_id TEXT NOT NULL, principal TEXT NOT NULL,
+                  target TEXT NOT NULL, session TEXT NOT NULL,
+                  state_key TEXT NOT NULL, expires REAL NOT NULL,
+                  revoked INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(principal,target,session,grant_id));
+                CREATE TABLE attempts (
+                  invocation_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+                  principal TEXT NOT NULL, target TEXT NOT NULL,
+                  session TEXT NOT NULL, state_key TEXT NOT NULL,
+                  status TEXT NOT NULL, started REAL NOT NULL, finished REAL,
+                  state_sha256 TEXT, result_sha256 TEXT,
+                  handler_artifact_sha256 TEXT NOT NULL,
+                  source_git_oid TEXT NOT NULL, receipt_sha256 TEXT,
+                  PRIMARY KEY(principal,target,session,invocation_id));
+            """)
+            db.execute("INSERT INTO grants(grant_id,principal,target,session,state_key,expires) "
+                       "VALUES(?,?,?,?,?,?)", (
+                           "old", "host-operator", "local-qwen", "sess1",
+                           "capabilities.synthetic", 200))
+            db.execute("INSERT INTO attempts(invocation_id,grant_id,principal,target,session,"
+                       "state_key,status,started,handler_artifact_sha256,source_git_oid) "
+                       "VALUES(?,?,?,?,?,?,'claimed',?,?,?)", (
+                           "old-claim", "old", "host-operator", "local-qwen", "sess1",
+                           "capabilities.synthetic", 100, "a" * 64, "sha1:" + "b" * 40))
+        first = self.broker()
+        second = self.broker()  # repeat migration is idempotent
+        self.assertEqual(first.attempt("old-claim")["status"], "claimed")
+        self.assertIsNone(first.attempt("old-claim")["plan_sha256"])
+        with self.assertRaisesRegex(ReadAccessDenied, "replay denied"):
+            second.execute("old", "old-claim", "capabilities.synthetic")
+        second.grant("new-bound", "capabilities.synthetic", expires_at_epoch=200,
+                     plan_sha256="9" * 64)
+        result, receipt = first.execute("new-bound", "new-use", "capabilities.synthetic",
+                                        plan_sha256="9" * 64)
+        self.assertEqual(result, {"sum": 5})
+        self.assertEqual(receipt["plan_sha256"], "9" * 64)
+        self.assertEqual(len(self.effects), 1)
+
+    def test_bound_plan_digest_validation_and_unbound_legacy_separation(self):
+        owner = self.broker()
+        for invalid in ("", "A" * 64, "a" * 63, 0, True, [], {}):
+            with self.subTest(invalid=invalid), self.assertRaises(ReadAccessDenied):
+                owner.grant("invalid", "capabilities.synthetic", expires_at_epoch=200,
+                            plan_sha256=invalid)
+        owner.grant("legacy", "capabilities.synthetic", expires_at_epoch=200)
+        with self.assertRaises(ReadAccessDenied):
+            owner.execute("legacy", "cannot-upgrade", "capabilities.synthetic",
+                          plan_sha256="9" * 64)
+        self.assertIsNone(owner.attempt("cannot-upgrade"))
+        result, receipt = owner.execute("legacy", "legacy-use", "capabilities.synthetic")
+        self.assertEqual(result, {"sum": 5})
+        self.assertNotIn("plan_sha256", receipt)
+        self.assertNotIn("intent_binding_kind", receipt)
 
 
 if __name__ == "__main__":

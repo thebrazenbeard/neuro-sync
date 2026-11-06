@@ -36,6 +36,10 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
         self.assertEqual(self.report["allowed"]["receipt_status"], "ok")
         self.assertEqual(self.report["allowed"]["receipt_binding"],
                          "host_asserted_unverified")
+        self.assertEqual(self.report["allowed"]["plan_sha256"],
+                         self.report["scripted_plan_sha256"])
+        self.assertEqual(self.report["allowed"]["intent_binding_kind"],
+                         "host_asserted_plan_and_handler")
         with sqlite3.connect(self.root / "authority.sqlite3") as connection:
             rows = connection.execute(
                 "SELECT invocation_id, status FROM attempts ORDER BY invocation_id"
@@ -68,11 +72,11 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
             count = connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
         self.assertEqual(count, 1)
 
-    def test_state_key_grant_is_not_a_specific_plan_grant(self) -> None:
-        """Trusted host handler replacement changes semantics under same grant.
+    def test_bound_grant_denies_selected_plan_and_descriptor_substitution(self) -> None:
+        """Plan or changed declared handler after approval cannot reuse grant.
 
-        This is a missing plan-binding feature, not an adversarial remote
-        bypass: the host itself controls approved_handlers in this fixture.
+        This is only source-level host asserted metadata. Actual replacement
+        of code while reusing an asserted hash is outside this fixture.
         """
         ledger = probe.StateLedger(self.root / "state.sqlite3", clock=lambda: probe.NOW)
         changed_effects = []
@@ -88,15 +92,24 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
             self.root / "authority.sqlite3", ledger,
             context=probe.HostBoundContext(probe.PRINCIPAL, probe.TARGET, probe.SESSION),
             approved_handlers={probe.KEY: probe.ApprovedEffect(
-                changed_host_handler, "a" * 64, "sha1:" + "b" * 40)},
+                changed_host_handler, "c" * 64, "sha1:" + "b" * 40)},
             clock=lambda: probe.NOW,
         )
-        result, receipt = replacement.execute("allowed", "different-plan-use", probe.KEY)
-        self.assertEqual(result, {"result": 9, "steps": 1})
-        self.assertEqual(changed_effects, [9])
-        self.assertEqual(receipt["status"], "ok")
-        self.assertEqual(self.report["grant_scope"],
-                         "state_key_only_not_individual_plan_handle")
+        case = probe._synthetic_case()
+        changed_plan = json.dumps({"steps": [
+            {"handle": case["handles"][1], "input": "initial"}], "abstain": False})
+        other_plan_sha256 = probe.hashlib.sha256(changed_plan.encode()).hexdigest()
+        with self.assertRaises(probe.ReadAccessDenied):
+            replacement.execute("allowed", "changed-handler-use", probe.KEY,
+                                plan_sha256=self.report["scripted_plan_sha256"])
+        with self.assertRaises(probe.ReadAccessDenied):
+            replacement.execute("allowed", "different-plan-use", probe.KEY,
+                                plan_sha256=other_plan_sha256)
+        with self.assertRaises(probe.ReadAccessDenied):
+            replacement.execute("allowed", "omitted-plan-use", probe.KEY)
+        self.assertEqual(changed_effects, [])
+        for invocation in ("changed-handler-use", "different-plan-use", "omitted-plan-use"):
+            self.assertIsNone(replacement.attempt(invocation))
 
     def test_state_is_really_committed_in_stateledger(self) -> None:
         ledger = probe.StateLedger(self.root / "state.sqlite3", clock=lambda: probe.NOW)
@@ -113,7 +126,7 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
         self.assertEqual(self.report["plan_source"],
                          "literal_scripted_typed_json_not_neural")
         self.assertEqual(self.report["plan_receipt_binding"],
-                         "not_bound_to_broker_receipt_handler_closure_only")
+                         "host_asserted_selected_plan_digest_and_handler_descriptor")
         self.assertTrue(any("same-UID" in limit for limit in self.report["limits"]))
         self.assertTrue(any("no durable attempt receipt" in limit
                             for limit in self.report["limits"]))

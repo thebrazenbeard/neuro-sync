@@ -134,6 +134,8 @@ class HostOwnedEffectBroker:
                     grant_id TEXT NOT NULL, principal TEXT NOT NULL,
                     target TEXT NOT NULL, session TEXT NOT NULL,
                     state_key TEXT NOT NULL, expires REAL NOT NULL,
+                    plan_sha256 TEXT, handler_artifact_sha256 TEXT,
+                    source_git_oid TEXT,
                     revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
                     PRIMARY KEY (principal,target,session,grant_id)
                 );
@@ -144,11 +146,24 @@ class HostOwnedEffectBroker:
                     status TEXT NOT NULL CHECK(status IN ('claimed','denied','ok','raised')),
                     started REAL NOT NULL, finished REAL,
                     state_sha256 TEXT, result_sha256 TEXT,
+                    plan_sha256 TEXT,
                     handler_artifact_sha256 TEXT NOT NULL,
                     source_git_oid TEXT NOT NULL, receipt_sha256 TEXT,
                     PRIMARY KEY (principal,target,session,invocation_id)
                 );
             """)
+            # Old authorities lack these nullable columns. Migrate in a
+            # writer transaction so two broker instances cannot race ALTER.
+            db.execute("BEGIN IMMEDIATE")
+            for table, columns in (
+                ("grants", ("plan_sha256", "handler_artifact_sha256", "source_git_oid")),
+                ("attempts", ("plan_sha256",)),
+            ):
+                existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+                for column in columns:
+                    if column not in existing:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+            db.commit()
 
     @contextmanager
     def _connect(self):
@@ -179,12 +194,22 @@ class HostOwnedEffectBroker:
         if getattr(self._in_handler, "active", False):
             raise ReadAccessDenied("reentrant broker operation denied")
 
-    def grant(self, grant_id: str, state_key: str, *, expires_at_epoch: float) -> None:
-        """Host-only grant creation; cannot resurrect an existing grant ID."""
+    def grant(self, grant_id: str, state_key: str, *, expires_at_epoch: float,
+              plan_sha256: str | None = None) -> None:
+        """Host-only grant creation; optionally pin plan and handler descriptor.
+
+        The plan digest and handler metadata are *host asserted*, not a proof
+        of the actual callback bytes or of an independent host principal.
+        Legacy unbound grants remain supported but do not qualify as an
+        individual-plan authorization.
+        """
         self._assert_not_handler()
         grant_id, state_key = _identifier(grant_id), _key(state_key)
         if state_key not in self._handlers:
             raise ReadAccessDenied("no host-approved handler")
+        if plan_sha256 is not None and (type(plan_sha256) is not str or
+                                        not HEX64.fullmatch(plan_sha256)):
+            raise ReadAccessDenied("invalid selected-plan digest")
         if type(expires_at_epoch) not in (int, float) or not math.isfinite(expires_at_epoch):
             raise ValueError("finite grant expiry required")
         if expires_at_epoch <= self._now():
@@ -192,10 +217,15 @@ class HostOwnedEffectBroker:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                db.execute("INSERT INTO grants(grant_id,principal,target,session,state_key,expires) "
-                           "VALUES(?,?,?,?,?,?)", (
+                approved = self._handlers[state_key]
+                db.execute("INSERT INTO grants(grant_id,principal,target,session,state_key,expires,"
+                           "plan_sha256,handler_artifact_sha256,source_git_oid) "
+                           "VALUES(?,?,?,?,?,?,?,?,?)", (
                     grant_id, self._context.principal_id, self._context.target_id,
-                    self._context.session_id, state_key, float(expires_at_epoch)))
+                    self._context.session_id, state_key, float(expires_at_epoch),
+                    plan_sha256,
+                    approved.handler_artifact_sha256 if plan_sha256 else None,
+                    approved.source_git_oid if plan_sha256 else None))
                 db.commit()
             except sqlite3.IntegrityError as exc:
                 db.rollback()
@@ -218,7 +248,9 @@ class HostOwnedEffectBroker:
                        "AND principal=? AND target=? AND session=?", scope)
             db.commit()
 
-    def _granted(self, db: sqlite3.Connection, grant_id: str, key: str, now: float) -> bool:
+    def _granted(self, db: sqlite3.Connection, grant_id: str, key: str,
+                 now: float, plan_sha256: str | None,
+                 approved: ApprovedEffect | None) -> bool:
         row = db.execute("SELECT * FROM grants WHERE grant_id=? AND principal=? "
                          "AND target=? AND session=?", (
                              grant_id, self._context.principal_id,
@@ -227,7 +259,12 @@ class HostOwnedEffectBroker:
                     and row["target"] == self._context.target_id
                     and row["session"] == self._context.session_id
                     and row["state_key"] == key and not row["revoked"]
-                    and now < row["expires"])
+                    and now < row["expires"]
+                    and row["plan_sha256"] == plan_sha256
+                    and (plan_sha256 is None or (
+                        approved is not None
+                        and row["handler_artifact_sha256"] == approved.handler_artifact_sha256
+                        and row["source_git_oid"] == approved.source_git_oid)))
 
     def _record(self, db: sqlite3.Connection, invocation_id: str,
                 *, status: str, finished: float, state_hash: str | None = None,
@@ -249,6 +286,9 @@ class HostOwnedEffectBroker:
             "artifact_binding_kind": "host_asserted_unverified",
             "evidence_class": "HOST_EXECUTION_RECEIPT_NOT_INDEPENDENT_VERIFY",
         }
+        if row["plan_sha256"] is not None:
+            receipt["plan_sha256"] = row["plan_sha256"]
+            receipt["intent_binding_kind"] = "host_asserted_plan_and_handler"
         receipt_hash = _hash(receipt)
         db.execute("UPDATE attempts SET status=?, finished=?, state_sha256=?, "
                    "result_sha256=?, receipt_sha256=? WHERE invocation_id=? "
@@ -256,7 +296,8 @@ class HostOwnedEffectBroker:
                        status, finished, state_hash, result_hash, receipt_hash, *scope))
         return {**receipt, "receipt_sha256": receipt_hash}
 
-    def execute(self, grant_id: str, invocation_id: str, state_key: str) -> tuple[Any, dict[str, Any]]:
+    def execute(self, grant_id: str, invocation_id: str, state_key: str, *,
+                plan_sha256: str | None = None) -> tuple[Any, dict[str, Any]]:
         """One durable invocation, with current grant and effect serialized.
 
         The ledger and handler run under a SQLite *writer* transaction shared
@@ -267,6 +308,9 @@ class HostOwnedEffectBroker:
         self._assert_not_handler()
         grant_id, invocation_id, state_key = (
             _identifier(grant_id), _identifier(invocation_id), _key(state_key))
+        if plan_sha256 is not None and (type(plan_sha256) is not str or
+                                        not HEX64.fullmatch(plan_sha256)):
+            raise ReadAccessDenied("invalid selected-plan digest")
         # Persist a claim BEFORE touching any effect handler. On crash, the
         # claim survives as ambiguous and all retries of the ID fail closed.
         with self._connect() as db:
@@ -278,19 +322,17 @@ class HostOwnedEffectBroker:
                                   self._context.target_id, self._context.session_id)).fetchone():
                     raise ReadAccessDenied("invocation replay denied")
                 now = self._now()
-                if not self._granted(db, grant_id, state_key, now):
-                    raise ReadAccessDenied("current use grant denied")
                 # Do not leak the installed handler registry to an ungranted
                 # caller by returning different errors for known/unknown keys.
                 approved = self._handlers.get(state_key)
-                if approved is None:
+                if not self._granted(db, grant_id, state_key, now, plan_sha256, approved) or approved is None:
                     raise ReadAccessDenied("current use grant denied")
                 db.execute("INSERT INTO attempts(invocation_id,grant_id,principal,target,session,"
-                           "state_key,status,started,handler_artifact_sha256,source_git_oid) "
-                           "VALUES(?,?,?,?,? ,?,'claimed',?,?,?)", (
+                           "state_key,status,started,plan_sha256,handler_artifact_sha256,source_git_oid) "
+                           "VALUES(?,?,?,?,? ,?,'claimed',?,?,?,?)", (
                                invocation_id, grant_id, self._context.principal_id,
                                self._context.target_id, self._context.session_id,
-                               state_key, now, approved.handler_artifact_sha256,
+                               state_key, now, plan_sha256, approved.handler_artifact_sha256,
                                approved.source_git_oid))
                 db.commit()
             except Exception:
@@ -300,7 +342,7 @@ class HostOwnedEffectBroker:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                if not self._granted(db, grant_id, state_key, self._now()):
+                if not self._granted(db, grant_id, state_key, self._now(), plan_sha256, approved):
                     self._record(db, invocation_id, status="denied", finished=self._now())
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
@@ -311,7 +353,7 @@ class HostOwnedEffectBroker:
                 state_hash = _hash(state)
                 # Recheck immediately before handler invocation. A concurrent
                 # revoke cannot commit while this transaction owns the lock.
-                if not self._granted(db, grant_id, state_key, self._now()):
+                if not self._granted(db, grant_id, state_key, self._now(), plan_sha256, approved):
                     self._record(db, invocation_id, status="denied", finished=self._now(),
                                  state_hash=state_hash)
                     db.commit()
@@ -344,7 +386,7 @@ class HostOwnedEffectBroker:
         """Read durable attempt status; ``claimed`` means crash ambiguity."""
         invocation_id = _identifier(invocation_id)
         with self._connect() as db:
-            row = db.execute("SELECT status,receipt_sha256,grant_id,state_sha256,result_sha256 "
+            row = db.execute("SELECT status,receipt_sha256,grant_id,state_sha256,result_sha256,plan_sha256 "
                              "FROM attempts WHERE invocation_id=? AND principal=? AND target=? "
                              "AND session=?", (
                                  invocation_id, self._context.principal_id,

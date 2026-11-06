@@ -93,6 +93,10 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
     selected, abstain = pilot.parse_plan(plan_text, case["handles"])
     if abstain or len(selected) != 1:
         raise AssertionError("scripted plan did not parse as an effect request")
+    # Bind the exact validated plan envelope, including the chosen opaque
+    # handle and dependency order, to the grant and durable broker receipt.
+    # This is host-asserted intent, not independent callback attestation.
+    selected_plan_sha256 = hashlib.sha256(plan_text.encode("utf-8")).hexdigest()
 
     ledger = StateLedger(root / "state.sqlite3", clock=lambda: NOW)
     _commit_state(ledger, {"operations": case["registry"]})
@@ -123,18 +127,22 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
         )
 
     owner = broker()
-    owner.grant("allowed", KEY, expires_at_epoch=2000)
-    allowed_result, allowed_receipt = owner.execute("allowed", "allowed-use", KEY)
+    owner.grant("allowed", KEY, expires_at_epoch=2000,
+                plan_sha256=selected_plan_sha256)
+    allowed_result, allowed_receipt = owner.execute(
+        "allowed", "allowed-use", KEY, plan_sha256=selected_plan_sha256)
     if allowed_result != {"result": case["goal"], "steps": 1}:
         raise AssertionError("executed plan differs from scripted expected effect")
 
     # The typed plan exists *before* both decisions. A revoked grant must not
     # invoke arithmetic_handler, and never creates an effect attempt claim.
-    owner.grant("revoked", KEY, expires_at_epoch=2000)
+    owner.grant("revoked", KEY, expires_at_epoch=2000,
+                plan_sha256=selected_plan_sha256)
     owner.revoke("revoked")
     before_revoked = len(effects)
     try:
-        owner.execute("revoked", "revoked-use", KEY)
+        owner.execute("revoked", "revoked-use", KEY,
+                      plan_sha256=selected_plan_sha256)
     except ReadAccessDenied as exc:
         revoked_denial = type(exc).__name__
     else:
@@ -143,11 +151,13 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
     if revoked_effects:
         raise AssertionError("handler ran after revocation")
 
-    owner.grant("expires", KEY, expires_at_epoch=1001)
+    owner.grant("expires", KEY, expires_at_epoch=1001,
+                plan_sha256=selected_plan_sha256)
     clock[0] = 1001.0
     before_expiry = len(effects)
     try:
-        owner.execute("expires", "expired-use", KEY)
+        owner.execute("expires", "expired-use", KEY,
+                      plan_sha256=selected_plan_sha256)
     except ReadAccessDenied as exc:
         expiry_denial = type(exc).__name__
     else:
@@ -159,7 +169,8 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
 
     # Reopen the same durable authority and reissue the exact invocation ID.
     try:
-        broker().execute("allowed", "allowed-use", KEY)
+        broker().execute("allowed", "allowed-use", KEY,
+                         plan_sha256=selected_plan_sha256)
     except ReadAccessDenied as exc:
         replay_denial = type(exc).__name__
     else:
@@ -169,7 +180,8 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
 
     foreign = broker(HostBoundContext("other-principal", TARGET, SESSION))
     try:
-        foreign.execute("allowed", "foreign-use", KEY)
+        foreign.execute("allowed", "foreign-use", KEY,
+                        plan_sha256=selected_plan_sha256)
     except ReadAccessDenied as exc:
         foreign_denial = type(exc).__name__
     else:
@@ -183,16 +195,18 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
         "evidence_class": "LOCAL_SCRIPTED_BROKER_FIXTURE_TEST",
         "model_called": False,
         "plan_source": "literal_scripted_typed_json_not_neural",
-        "plan_receipt_binding": "not_bound_to_broker_receipt_handler_closure_only",
-        "grant_scope": "state_key_only_not_individual_plan_handle",
+        "plan_receipt_binding": "host_asserted_selected_plan_digest_and_handler_descriptor",
+        "grant_scope": "state_key_selected_plan_digest_and_host_asserted_handler_descriptor",
         "actual_broker": "HostOwnedEffectBroker",
         "state_source": "committed_StateLedger",
         "state_evidence": "schema_valid_sentinels_not_independently_attested",
-        "scripted_plan_sha256": hashlib.sha256(plan_text.encode("utf-8")).hexdigest(),
+        "scripted_plan_sha256": selected_plan_sha256,
         "parsed_steps": len(selected),
         "allowed": {"handler_result": allowed_result,
                     "receipt_status": allowed_receipt["status"],
                     "receipt_binding": allowed_receipt["artifact_binding_kind"],
+                    "plan_sha256": allowed_receipt["plan_sha256"],
+                    "intent_binding_kind": allowed_receipt["intent_binding_kind"],
                     "durable_attempt_status": reloaded.attempt("allowed-use")["status"]},
         "revoked_after_plan": {
             "error": revoked_denial, "new_effects": revoked_effects,
@@ -211,8 +225,8 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
             "single-process fixture role names do not authenticate independent principals",
             "SQLite protects invocation claims, not exactly-once external effects",
             "revoked or expired before first claim yields no durable attempt receipt",
-            "broker receipt hashes state and result, but not the model-selected plan",
-            "grant covers the state key, not a particular one of the 13 plan handles",
+            "selected-plan SHA-256 and handler descriptors are asserted by the same host fixture",
+            "same-UID host can alter callback logic while reusing an asserted handler SHA-256",
             "broker object reopen occurs in one process, not a crash or process restart",
         ],
     }
