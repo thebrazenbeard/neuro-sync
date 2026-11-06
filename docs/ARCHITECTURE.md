@@ -1,15 +1,16 @@
 # Neuro-Sync: Source Architecture and Qualification Boundaries
 
 **Status: source-level research code, not a distributed LLM runtime.** Main at
-`6157e719bd2da141cf92f542c1b5f29ed1185e13` includes the historical toy
+`5be0e399ee5e4b635963cf9b5bd678597918a9e3` includes the historical toy
 baseline, the strict Trek categorical-SGD experiment (PR #4), the independent
 exact-base stdlib transfer API (PR #3), and the signed-zero fingerprint
-regression fix (PR #6). This document describes those checked-in components;
-inspect the exact Git head for later changes.
+regression fix (PR #6), plus cross-component mechanical integration tests
+(PR #7). This document describes those checked-in components; inspect the
+exact Git head for later changes.
 
 ## What exists and what does not
 
-| Component | Main at `6157e71` | Claim ceiling |
+| Component | Main at `5be0e39` | Claim ceiling |
 | --- | --- | --- |
 | `experiments/toy-transfer/adapter_transplant.py` | Implemented, stdlib | Compatible toy tensor/delta copy and rollback mechanics |
 | `experiments/toy-transfer/toy_factual_experiment.py` | Implemented, stdlib | Synthetic cue-to-answer association controls, **not** learned Trek knowledge |
@@ -18,6 +19,7 @@ inspect the exact Git head for later changes.
 | `experiments/trek-transfer-v0/test_transfer.py` | **Merged in #4**, stdlib | Eight targeted tests of initialization, controls, and fresh-process recipient readback |
 | `src/neurosync/core.py`, `src/neurosync/__init__.py` | **Merged in #3**, stdlib | Exact-base tensor-delta extraction, bounded transfer, typed receipt, rollback; no authenticated rights or real model adapters |
 | `tests/test_core_transfer.py` | **Merged in #3**, stdlib | Adversarial core mechanics, numeric-integrity checks, no real-model effect |
+| `tests/test_core_trek_integration.py` | **Merged in #7**, stdlib | Five cross-component tests: train A via Trek TinyLearner, map its parameters into exact-base core snapshot, transfer, subprocess-score B; still same taught symbolic queries |
 | Network transport, VN2/Lappy execution, shared optimizer, model checkpoints | **Absent** | No runtime or host qualification claim |
 
 The historical `core/`, `hooks/`, `mesh/`, and `runtime/` sketch named paths that
