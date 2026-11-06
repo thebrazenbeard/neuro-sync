@@ -15,6 +15,20 @@ For a source-only import smoke test, run
 
 This project concerns **model-to-model transfer**, not human EEG or biological neural synchronization. “Synchronization,” “neural,” and “shared cognition” are research metaphors, not evidence of a common mind, consciousness, identity, or merged topology. Interacting models do **not** automatically expose their weights to one another: access to checkpoints, adapters, activations, or gradients must be explicitly engineered and authorized.
 
+## Path C — StateBus (zero-weight coordination)
+
+The independent [StateBus v0 proposal](docs/STATEBUS.md) specifies a **consented exchange of typed state and evidence** between model sessions. It is deliberately different from altering a recipient's neural weights:
+
+| Path | Mechanism | What survives donor disconnect? |
+| --- | --- | --- |
+| **A — compatible weights** | Explicit exact-base tensor/adapter copy into B | B's own changed, hashed weights/adapter, subject to B-only behavior tests |
+| **B — distillation** | Train a receiver-native adapter/weights from authorized teacher signals | B's separately trained checkpoint if donor-independent evaluation passes |
+| **C — zero-weight StateBus** | Authorized, provenance-bound messages and optional external read-only memory | External StateBus state/context; **B's parameters remain unchanged** |
+
+The committed [StateBus bridge source](src/neurosync/bus/bridge.py) implements bounded JSON artifact export/import for **explicit client/user/tool mediation**, and the [local StateBus ledger](src/neurosync/bus/ledger.py) implements source-level proposals, validation fixtures and local commits. **Neither is installed into ChatGPT or independently witnessed.** OpenAI also documents optional [custom MCP server](https://developers.openai.com/api/docs/guides/custom-mcp-server) and [tool connector](https://developers.openai.com/api/docs/guides/tools-connectors-mcp) surfaces through explicitly installed/authenticated Server URL or Secure MCP Tunnel. These may provide ChatGPT *tool access* once genuinely installed and qualified, **not** access to hidden weights, native token-stream hooks or a permanently modified ChatGPT runtime. Local Qwen/model endpoints require fresh host/model/resource checks; this README does not assert any host or plugin is currently qualified. StateBus source, transport and actual independently authenticated authority are separately gated. A received context, a tool result or a positive model review is **not evidence of weight plasticity or verified truth**.
+
+The merged [zero-weight operational fixture](experiments/zero-weight-sync/README.md) exercises **scripted mock A/B adapters** through the local SQLite bus: A-origin host-observed capability proposals, separate local validation callbacks, task-blind references, B-only fresh-process tool use, no-state/decoy/stale/forged-A controls and unchanged mock artifact hashes. Its current claim is **source-level externally mediated capability discovery**, not a real Qwen/ChatGPT interaction, learned generalization, authenticated external authority, or neural synchronization. The test suite belongs to the exact committed fixture; its **20 local tests** are not runtime/semantic proof.
+
 ## Research question
 
 Suppose models A and B start as two **byte-identical, untrained copies** of a small model. **Teach only A** a bounded set of Star Trek facts; **leave B untouched and untrained** until a specified, authorized interaction. Can B then retain A's taught facts **in B's own checkpoint** after A disconnects? This is Patrick's **strict initial pilot**, not an assertion that it already works. A separate **retention variant** may teach B unrelated, non-Trek facts *before* interaction to measure whether transfer damages B's earlier skills. Do not silently substitute that variant for the untouched-B pilot.
@@ -90,7 +104,7 @@ From the repository root, the no-download test commands are
 `python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v`
 and `python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v`.
 The optional PyTorch-dependent cases explicitly skip if `torch` is unavailable.
-The proposed CI runs these and the exact-base core suite on a standard public-repository GitHub runner
+The existing source-level CI runs these and the exact-base core suite on a standard public-repository GitHub runner
 without downloading model artifacts or installing optional dependencies. Green
 mechanics tests do **not** establish newly learned capabilities or distributed
 runtime readiness.

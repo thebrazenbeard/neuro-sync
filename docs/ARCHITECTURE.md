@@ -20,7 +20,11 @@ exact Git head for later changes.
 | `src/neurosync/core.py`, `src/neurosync/__init__.py` | **Merged in #3**, stdlib | Exact-base tensor-delta extraction, bounded transfer, typed receipt, rollback; no authenticated rights or real model adapters |
 | `tests/test_core_transfer.py` | **Merged in #3**, stdlib | Adversarial core mechanics, numeric-integrity checks, no real-model effect |
 | `tests/test_core_trek_integration.py` | **Merged in #7**, stdlib | Five cross-component tests: train A via Trek TinyLearner, map its parameters into exact-base core snapshot, transfer, subprocess-score B; still same taught symbolic queries |
-| Network transport, VN2/Lappy execution, shared optimizer, model checkpoints | **Absent** | No runtime or host qualification claim |
+| `experiments/zero-weight-sync/{run.py,test_sync.py,README.md}` | **Merged #12**, stdlib scripted mock fixture | A-origin capability proposal, local validation callbacks, mock A/B state mediation, B-only subprocess and unchanged artifact checks; not real model autonomy |
+| `docs/STATEBUS.md` | **Proposed higher-level wire/trust protocol**, not installed | Path C source contract; JCS and independent witness not implemented |
+| `src/neurosync/bus/{schema.py,ledger.py,__init__.py}` + `tests/test_bus_core.py` | **Merged #9**, source/local SQLite mechanics; metadata integrity follow-up **#11** | Typed StateDelta, session-scoped revision/PROPOSE→VALIDATE→local COMMIT, not external verified authority |
+| `src/neurosync/bus/bridge.py` + `tests/test_bus_bridge.py` | **Merged #10**, source tests | User/tool-mediated JSON import/export and bounded opt-in loopback client; not installed ChatGPT MCP or Qwen connection |
+| Deployed remote transport, VN2/Lappy execution, shared optimizer, production model checkpoints | **Absent** | Source loopback client does not prove any live host or distributed runtime |
 
 The historical `core/`, `hooks/`, `mesh/`, and `runtime/` sketch named paths that
 never existed. An `mmap` file is not network-distributed weight synchronization.
@@ -62,6 +66,22 @@ no-dependency wheel build and installation to an isolated temporary target,
 followed by import of the public symbols. That establishes **packaging
 mechanics for this exact tree**, not a published release or a production API.
 No package publication or implied external redistribution license is authorized.
+
+## Three transfer paths and StateBus qualification
+
+The [StateBus v0 proposal](STATEBUS.md) is a distinct **Path C zero-weight** state/context mediation route. The existing exact-base library and Trek SGD fixture investigate **Path A compatible weight copy** and a bounded **Path B ordinary donor-output distillation control**; neither means a ChatGPT session has native access to another model's neural parameters. StateBus can carry claims and evidence about these activities but cannot authorize their protected effects on its own.
+
+| Track | Required actual effect | What current source does **not** prove |
+| --- | --- | --- |
+| A — weight copy | Exact compatible donor/receiver checkpoint+schema and authorized independent B artifact | Heterogeneous compatibility, learned generalization, model self-consent |
+| B — distillation | Authorized teacher signals, actual B-local optimization, B-only persisted checkpoint | Novel cross-gradient transfer or improvements beyond ordinary distillation |
+| C — zero-weight bus | Typed, scoped, externally committed state/context under verified actor permissions | B parameter change, ChatGPT native memory overlay, distributed cognition |
+
+Immediately available *in principle* is client-mediated export/import of bounded messages. Official OpenAI docs also describe an **optional installed custom MCP server** using Server URL or Secure MCP Tunnel, subject to actual install/auth and cost gate; it is tool access, not hidden token-stream or weight hooks. An optional qualified local model endpoint likewise requires fresh host, exact model, RAM/workload and permission checks. Do not infer an active plugin, loopback server, private Blotter bus, local Qwen spare capacity, remote consensus or zero-cost tunnel from documents. A full secure tunnel may require Platform credentials and billable usage; no paid path is authorized here.
+
+**Evidence ceiling:** the higher-level wire/trust protocol remains proposed; the merged StateDelta/StateLedger and bridge have source-level tests only, with no authenticated external witness or host deployment. PROPOSE → VALIDATE → COMMIT requires an independent validator and external durable witness for a protocol-level commit. A method called StateLedger.commit() that merely appends locally is **LOCAL_APPEND_UNWITNESSED** until separately attested. Typed claimed_evidence_class and model-provided sender/surface names have no independent authority; neither do caller-minted fixture grants. Transient functional context must never be auto-promoted to memory, plasticity or identity.
+
+Qualification compares **(A) B with no bus/no state**, **(B) B with read-only authorized StateBus context but unchanged weights**, and **(C) B with changed, hashed recipient weights cold-restarted while bus disconnected**. Add stale/decoy/replay, secret-sentinel, cross-session, capability-revocation and fork tests. A result limited to B is context mediation, not neural transfer. A 50-turn, Qwen3.5-35B or fully native integration claim requires independent actual runtime receipts; none is established by these docs.
 
 ## Compatibility tiers (separate evidence classes)
 
@@ -148,7 +168,10 @@ From the repository root (no package install or network request):
 ```bash
 python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v
 python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
+python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 ```
+
+The [zero-weight pilot](../experiments/zero-weight-sync/README.md) additionally supports `python3 experiments/zero-weight-sync/run.py demo`: **scripted mock** A/B artifacts and host-owned local capability only, not real Qwen or an installed ChatGPT MCP tool. Its source tests include no-state, stale/decoy, revoked, forged-A and fresh B-process controls; the local host callbacks are not independently authenticated authorities.
 
 The Trek source's local commands are
 `python3 experiments/trek-transfer-v0/run.py --dataset trek` and
@@ -156,10 +179,12 @@ The Trek source's local commands are
 Both run a tiny structured learner and evaluate B in a fresh Python subprocess;
 neither trains or transfers between actual LLMs or accesses a remote donor.
 
-For the committed stdlib core:
+For the committed stdlib core and StateBus source:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_core.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_bridge.py' -v
 PYTHONPATH=src python3 -c 'from neurosync import Tensor, ModelSnapshot, build_delta_bundle, apply_delta_bundle, rollback_transfer; print(Tensor.from_nested([[1.0, 2.0]]).shape)'
 ```
 
