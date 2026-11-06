@@ -435,14 +435,42 @@ def snapshot_to_json(snapshot: ModelSnapshot) -> str:
 
 
 def snapshot_from_json(encoded: str) -> ModelSnapshot:
-    """Restore only the named receiver snapshot, not an executing model."""
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict) or decoded.get("version") != SCHEMA_VERSION:
+    """Restore only the named receiver snapshot, not an executing model.
+
+    The wire format is deliberately closed: extra fields cannot smuggle a
+    provenance/authorization claim, and duplicate keys cannot make different
+    parsers disagree about which snapshot was received. This does *not*
+    authenticate the source or establish permission to import weights.
+    """
+    def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded_fields: dict[str, object] = {}
+        for key, value in pairs:
+            if key in decoded_fields:
+                raise ValueError(f"duplicate JSON key: {key}")
+            decoded_fields[key] = value
+        return decoded_fields
+
+    def reject_nonfinite(value: str) -> object:
+        raise ValueError(f"non-finite JSON number: {value}")
+
+    decoded = json.loads(encoded, object_pairs_hook=unique_fields,
+                         parse_constant=reject_nonfinite)
+    if (not isinstance(decoded, dict)
+            or type(decoded.get("version")) is not int
+            or decoded["version"] != SCHEMA_VERSION):
         raise ValueError("unsupported snapshot version")
+    if set(decoded) != {"version", "model_id", "architecture_id", "schema_id", "tensors"}:
+        raise ValueError("unknown snapshot fields or missing required fields")
+    if not isinstance(decoded["tensors"], list):
+        raise ValueError("snapshot tensors must be a list")
     records = []
     for item in decoded["tensors"]:
-        if not isinstance(item, dict) or not isinstance(item.get("values_hex"), list):
+        if not isinstance(item, dict) or set(item) != {"name", "shape", "values_hex"}:
+            raise ValueError("unknown tensor fields or missing required fields")
+        if not isinstance(item["shape"], list) or not isinstance(item["values_hex"], list):
             raise ValueError("malformed snapshot tensor")
+        if any(not isinstance(x, str) for x in item["values_hex"]):
+            raise ValueError("tensor hex values must be strings")
         tensor = Tensor(tuple(item["shape"]), tuple(float.fromhex(x) for x in item["values_hex"]))
         records.append((item["name"], tensor))
     return ModelSnapshot(

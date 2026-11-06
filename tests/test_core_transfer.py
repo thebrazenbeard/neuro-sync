@@ -1,6 +1,7 @@
 """Stdlib tests for exact-base transfer and rollback (no model dependencies)."""
 
 from dataclasses import replace
+import json
 import os
 import subprocess
 import sys
@@ -283,6 +284,33 @@ class TransferTests(unittest.TestCase):
                          ["receiver-B", receiver.fingerprint()])
         with self.assertRaises(ValueError):
             snapshot_from_json(encoded.replace('"version":1', '"version":99'))
+
+    def test_receiver_snapshot_import_refuses_forged_schema_aliases(self):
+        receiver, _ = self.apply()
+        encoded = snapshot_to_json(receiver)
+        with self.assertRaisesRegex(ValueError, "version"):
+            snapshot_from_json(encoded.replace('"version":1', '"version":true'))
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            snapshot_from_json(encoded.replace(
+                '"model_id":"receiver-B"',
+                '"model_id":"forged","model_id":"receiver-B"',
+            ))
+        with self.assertRaisesRegex(ValueError, "unknown snapshot fields"):
+            snapshot_from_json(encoded.replace('"version":1', '"claimed_authorized":true,"version":1'))
+        decoded = json.loads(encoded)
+        decoded["tensors"][0]["rights_status"] = "APPROVED"
+        with self.assertRaisesRegex(ValueError, "unknown tensor fields"):
+            snapshot_from_json(json.dumps(decoded))
+        with self.assertRaisesRegex(ValueError, "duplicate JSON key"):
+            snapshot_from_json(encoded.replace('"shape":', '"shape":[],"shape":', 1))
+        with self.assertRaisesRegex(ValueError, "non-finite JSON number"):
+            snapshot_from_json(encoded.replace('"version":1', '"version":1,"other":NaN'))
+        decoded = json.loads(encoded)
+        del decoded["schema_id"]
+        with self.assertRaisesRegex(ValueError, "missing required fields"):
+            snapshot_from_json(json.dumps(decoded))
+        with self.assertRaisesRegex(ValueError, "tensor hex values must be strings"):
+            snapshot_from_json(encoded.replace('"values_hex":[', '"values_hex":[true,', 1))
 
     def test_no_changes_and_mismatched_donor_structure(self):
         with self.assertRaisesRegex(ValueError, "no weight changes"):
