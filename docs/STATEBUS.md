@@ -74,6 +74,10 @@ The merged [StateBus core PR #9](https://github.com/thebrazenbeard/neuro-sync/pu
 
 The merged [bridge PR #10](https://github.com/thebrazenbeard/neuro-sync/pull/10) added a **user-mediated export/import adapter** (`src/neurosync/bus/bridge.py`) and an optional explicitly authorized **loopback** OpenAI-compatible local model endpoint. Neither makes ChatGPT's weights/token stream accessible. Its `tests/test_bus_bridge.py` exercises bounded JSON and fake hostile responses; its source suite ran against the actual StateBus core after integration. The wire envelope, ledger implementation, bridge protocol and rights authority must each be tested and versioned before they can be called interoperable. The current bridge is a narrow local JSON profile, **not** qualified RFC 8785 JCS wire interoperability.
 
+### Unqualified read/use authorization at this baseline
+
+The local `StateLedger.project(target_id, session_id)` source does **not** take an authenticated caller principal. Session-scoped projection is a consistency namespace, **not** a read access-control list: a process holding the SQLite path and knowing a target/session can read it. A reproduced hostile fixture also showed that setting the original pilot's `grant_open` flag to false **after** a successful local commit did not stop a fresh B process from invoking the already-discovered host formatter; that fixture checked grant state at proposal/commit time, not each later effect. Neither condition is acceptable for a networked or multi-tenant service. A real broker must enforce current principal-specific **read** and **use** grants at the effect boundary, alongside expiry, identity, revocation and provenance; its actual trusted principal must be independent of model-declared text. New wrappers or tests cannot retroactively make raw SQLite access authenticated.
+
 ## Privacy and threat model
 
 | Attack / failure | Required defense and observable test |
