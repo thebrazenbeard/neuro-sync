@@ -97,7 +97,7 @@ Conceptual ecosystem references such as the BT2 Hyperconnectome and Plasticity/S
 
 ## Repository status and planned boundaries
 
-The **historical** `main` at commit `48245d5e59e1fe9261899e63b2fd156e6d686847` contained **only the original README**. The **current** `main` at `b929e431bf9ac5127ca5fcab6277cbeb641893ef` merged the seven-file [toy-transfer experiment directory](experiments/toy-transfer/README.md). It contains source and tests, **no deployed multi-LLM runtime**. The former `core/`, `hooks/`, `mesh/`, `runtime/`, and `neurosync` import example were *illustrative paths and pseudocode*, **not implemented modules or a runnable API**. Do not advertise them as installed.
+The **historical** `main` at commit `48245d5e59e1fe9261899e63b2fd156e6d686847` contained **only the original README**. The toy-experiment merge at `b929e431bf9ac5127ca5fcab6277cbeb641893ef` added the seven-file [toy-transfer experiment directory](experiments/toy-transfer/README.md). Those files contain source and tests, **no deployed multi-LLM runtime**. The former `core/`, `hooks/`, `mesh/`, `runtime/`, and `neurosync` import example were *illustrative paths and pseudocode*, **not implemented modules or a runnable API**. Do not advertise them as installed.
 
 Suggested progression: (1) exact-base adapter transplant and signed/provenance-checked rollback; (2) controlled toy fact transfer with donor disconnect; (3) target-native learned bridge/distillation with fair baselines; (4) real-model trials; (5) qualified optional distributed transport. Each stage may disprove the need for the more elaborate one. Preserve negative results.
 
