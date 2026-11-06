@@ -15,6 +15,7 @@ from neurosync.bus.wire import (
     MAX_SAFE_INTEGER,
     WIRE_PROFILE,
     WireError,
+    WireFrame,
     canonical_bytes,
     decode_canonical,
     decode_frame,
@@ -49,6 +50,19 @@ class WireProfileTests(unittest.TestCase):
         self.assertEqual(frame.payload, {"ref": "fixture.ref", "version": 1})
         self.assertEqual(frame.sha256, hashlib.sha256(blob).hexdigest())
         self.assertEqual(WIRE_PROFILE, "statebus-restricted-json-v1")
+
+    def test_decoded_frame_hash_not_desynchronized_by_payload_mutation(self):
+        blob = encode_frame("state_delta", {"value": {"nested": [1]}})
+        frame = decode_frame(blob)
+        purported_payload = frame.payload
+        purported_payload["value"]["nested"].append(2)
+        # The hash always refers to original immutable wire bytes. Every
+        # payload access returns a fresh copy, not a mutable cached alias.
+        self.assertEqual(frame.payload, {"value": {"nested": [1]}})
+        self.assertEqual(frame.sha256, hashlib.sha256(blob).hexdigest())
+        self.assertRaises(WireError, WireFrame, "state_delta", blob, "f" * 64)
+        self.assertRaises(WireError, WireFrame, "other_kind", blob,
+                          hashlib.sha256(blob).hexdigest())
 
     def test_reject_profile_downgrade_and_unknown_kind(self):
         blob = encode_frame("test_result", {"passed": True})
