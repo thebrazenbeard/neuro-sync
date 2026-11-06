@@ -99,6 +99,7 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
     _commit_state(ledger, {"operations": case["registry"]})
     effects: list[dict[str, Any]] = [] if handler_log is None else handler_log
     clock = [NOW]
+    clock_observations = [clock[0]]
 
     def arithmetic_handler(committed_state: Any, approved_plan: Any) -> dict[str, Any]:
         if type(committed_state) is not dict or set(committed_state) != {"operations"}:
@@ -156,6 +157,7 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
 
     owner.grant_plan("expires", KEY, plan=plan, expires_at_epoch=1001)
     clock[0] = 1001.0
+    clock_observations.append(clock[0])
     before_expiry = len(effects)
     try:
         owner.execute_plan("expires", "expired-use", KEY, plan=plan)
@@ -166,7 +168,9 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
     expired_effects = len(effects) - before_expiry
     if expired_effects:
         raise AssertionError("handler ran after expiry")
-    clock[0] = NOW
+    # Do not rewind the host clock for later negative cases. A plan authority
+    # with a durable observed-time floor must reject that synthetic rollback,
+    # which would test the clock instead of the intended grant behavior.
 
     # Reopen the same durable authority and reissue the exact invocation ID.
     try:
@@ -244,6 +248,7 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
         raise AssertionError("stale state reached the handler")
 
     reloaded = broker()
+    clock_observations.append(clock[0])
     report = {
         "schema_version": 2,
         "evidence_class": "LOCAL_SCRIPTED_BROKER_FIXTURE_TEST",
@@ -254,6 +259,7 @@ def run_probe(root: Path, *, handler_log: list[dict[str, Any]] | None = None) ->
         "actual_broker": "HostOwnedEffectBroker",
         "state_source": "committed_StateLedger",
         "state_evidence": "schema_valid_sentinels_not_independently_attested",
+        "synthetic_plan_clock_epochs": clock_observations,
         # The literal JSON contains spaces; the receipt hashes sorted compact
         # JSON and must be compared to a separately computed canonical digest.
         "wire_plan_text_sha256": hashlib.sha256(plan_text.encode("utf-8")).hexdigest(),

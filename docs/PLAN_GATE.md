@@ -36,8 +36,8 @@ NaN and Infinity rejected, and input size bounded by `MAX_READ_VALUE_BYTES`.
 Both the requested plan and plan-gated state snapshots are preflighted with
 limits on nesting depth, visited nodes and individual scalar length before
 canonical serialization allocates the full JSON representation.
-The `plan_grants` table stores the resulting `plan_sha256`, the SHA-256 of projected state
-at approval time, and the asserted handler artifact/source identifiers. A
+The `clock_guarded_plan_grants` table stores `plan_sha256`, the SHA-256 of
+projected state at approval time, and asserted handler artifact/source IDs. A
 caller-supplied hash is neither accepted nor used. `execute_plan` checks the
 exact plan hash and handler identifiers before recording an attempt, then
 checks the grant again and compares a fresh detached state snapshot against
@@ -60,10 +60,28 @@ handler failure consumes the approval and invocation ID. Receipts for plan attem
 `version=2` and include the executed `plan_sha256`; legacy receipts remain v1.
 
 Existing SQLite legacy grant and attempt rows survive idempotent additive
-migration. Plan approvals live in a **separate `plan_grants` table**, invisible
-to older broker binaries that query only `grants`. Historic attempts remain
-retrievable. New code disallows duplicate grant IDs across the two tables
-within a scope. No grant ID is resurrected after revocation via the new API.
+migration. Active plan approvals now live in a third,
+**`clock_guarded_plan_grants`** table, invisible both to key-only brokers and
+to earlier plan-aware brokers that read `plan_grants`. Historic `plan_grants`
+rows are retained **as inert history** in the new API; pending old approvals
+are not silently migrated or executed. A host must issue a fresh v2 approval
+with a new grant ID. Reuses are denied across all three tables in the same
+scope, and revocation covers each table without trusting the clock. This is a
+deliberate fail-closed compatibility change, not a transparent schema upgrade.
+
+The v2 sidecar `<authority-db>.clock.sqlite3` records the greatest *observed*
+host epoch, independently committed from the main authority transaction.
+Main `plan_clock_binding` binds it by UUID; the old in-main `plan_clock_state`
+is obsolete metadata. Plan grant, claim, effect and receipt-time reads use
+main→sidecar lock ordering, including expired **pre-claim denials**. Once a
+request observes epoch 250, another request at epoch 150 is denied against
+the same intact paired files, even after restart. A missing/mismatched READY
+sidecar denies plans; existing revocations remain available. Identical times
+are allowed; future observations raise the floor. This is not independent
+evidence of genuine UTC progression or anti-rollback protection against a
+valid historical same-UUID sidecar snapshot. Both files require paired
+backup/custody. See
+[`docs/CLOCK_AUTHORITY.md`](CLOCK_AUTHORITY.md).
 
 ## Explicit limits and evidence classification
 
@@ -84,14 +102,18 @@ within a scope. No grant ID is resurrected after revocation via the new API.
 - **NOT HANDLER ATTESTATION:** `handler_artifact_sha256` and `source_git_oid`
   are supplied by the host. An incorrect or deliberately falsified descriptor
   is not detected. A changed descriptor is denied when using an old grant.
-- **HOST CLOCK TRUST:** Expiry relies on the host-supplied clock. If it rolls
-  backward, an expired but *unconsumed* grant may become valid again. Hosts
-  must supply and protect a trustworthy time source; no persistent high-water
-  clock floor is implemented here.
-- **OLD-BINARY CAVEAT:** Older code cannot consume a *new* plan approval via
-  its legacy grant lookup. An independently authorized old binary may still
-  create entirely new key-only legacy grants, since this is not an OS-level
-  service-version pin or exclusive control of the SQLite file.
+- **HOST CLOCK TRUST:** Expiry still relies on the host-supplied clock. The
+  separately committed sidecar high-water rejects detected rollback, but
+  cannot infer time that passed without observation or defend against a valid
+  older same-UUID sidecar/paired snapshot restore or malicious host/DB edits.
+  A forward jump may block subsequent valid work until the host clock catches
+  up or a separately authorized recovery occurs. Hosts must still supply and
+  protect a trustworthy clock; the broker does not independently attest time.
+- **OLD-BINARY CAVEAT:** Key-only and earlier plan-aware binaries cannot
+  consume *new v2* approvals because they do not query the new table. An
+  earlier plan-aware binary can still execute **historical v1 approvals**
+  against the untouched v1 table, or create new v1 approvals. An older host
+  may also issue new key-only grants. This is not OS-level version pinning.
 - **NOT SCIENTIFIC GENERALIZATION EVIDENCE:** No training, model improvement,
   causal transfer, human review or independent production qualification is
   established by these tests.

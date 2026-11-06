@@ -71,6 +71,13 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
         self.assertIsNone(foreign["durable_attempt"])
         self.assertEqual(len(self.effects), 1)
 
+    def test_fixture_clock_never_rewinds_between_negative_cases(self) -> None:
+        # The expiry case deliberately observes the endpoint at t=1001;
+        # later grant tests must not set the host authority back to t=1000.
+        observations = self.report["synthetic_plan_clock_epochs"]
+        self.assertEqual(observations, [probe.NOW, 1001.0, 1001.0])
+        self.assertEqual(observations, sorted(observations))
+
     def test_durable_replay_rejected_after_broker_reopen(self) -> None:
         self.assertEqual(self.report["replayed_after_reopen"], {
             "error": "ReadAccessDenied", "effects_total": 1,

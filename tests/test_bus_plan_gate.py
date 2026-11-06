@@ -139,12 +139,12 @@ class PlanBoundEffectTests(unittest.TestCase):
     def test_scope_components_and_reused_grant_id_stay_denied(self):
         broker = self.broker()
         broker.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=200)
-        # A legacy broker binary has only `grants` and cannot see plan_grants.
+        # Previous binaries know `grants` and/or `plan_grants`, not v2.
         with sqlite3.connect(self.path) as db:
             visible = db.execute("SELECT 1 FROM grants WHERE grant_id='once'").fetchone()
             self.assertIsNone(visible)
             self.assertIsNotNone(db.execute(
-                "SELECT 1 FROM plan_grants WHERE grant_id='once'").fetchone())
+                "SELECT 1 FROM clock_guarded_plan_grants WHERE grant_id='once'").fetchone())
         with self.assertRaises(ReadAccessDenied):
             broker.grant("once", KEY, expires_at_epoch=200)
         with self.assertRaises(ReadAccessDenied):
@@ -216,7 +216,8 @@ class PlanBoundEffectTests(unittest.TestCase):
         self.now = 101
         with self.assertRaises(ReadAccessDenied):
             broker.execute_plan("expires", "expires-invoke", KEY, plan=self.plan)
-        self.now = 100
+        # Clock is now known to have reached 101; never use a past epoch.
+        self.now = 101
         broker.grant_plan("owner", KEY, plan=self.plan, expires_at_epoch=200)
         foreign = self.broker(context=HostBoundContext("foreign", "receiver", "session"))
         with self.assertRaises(ReadAccessDenied):
