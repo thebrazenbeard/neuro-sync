@@ -60,5 +60,26 @@ jobs:
       - name: Verify three-arm governance differential (no model call)
         run: python3 -m unittest discover -s experiments/governance-differential -p 'test_*.py' -v
 
+      # The explicit smoke steps above preserve historical lane receipts, but
+      # their allowlists must not silently omit newly added training tests.
+      - name: Verify every library and integration test (not an allowlist)
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Verify all experiment test suites including newly added paths
+        shell: bash
+        run: |
+          discovered=0
+          for experiment in experiments/*; do
+            [[ -d "$experiment" ]] || continue
+            test_files=("$experiment"/test_*.py)
+            [[ -e "${test_files[0]}" ]] || continue
+            discovered=$((discovered + 1))
+            python3 -m unittest discover -s "$experiment" -p 'test_*.py' -v
+          done
+          if [[ "$discovered" -eq 0 ]]; then
+            echo 'No experiment test suites discovered'
+            exit 1
+          fi
+
       - name: Verify tiny recipient-retention transfer falsifiers (no model call)
         run: python3 -m unittest discover -s experiments/transfer-falsifiers -p 'test_*.py' -v
