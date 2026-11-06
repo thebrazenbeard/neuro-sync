@@ -416,6 +416,16 @@ class HostOwnedEffectBroker:
                     raise ReadAccessDenied("clock authority binding mismatch")
                 now = self._now()
                 previous = row["last_observed_epoch"]
+                # NULL is legitimate only for an unused, freshly paired
+                # authority. A floor missing after any v2 approval would
+                # permit resurrection; malformed, nonfinite SQLite values
+                # must never silently become the new comparison baseline.
+                if previous is None:
+                    if db.execute("SELECT 1 FROM clock_guarded_plan_grants LIMIT 1").fetchone():
+                        raise ReadAccessDenied("clock high-water missing for existing plan grants")
+                elif (type(previous) not in (float, int) or
+                      not math.isfinite(previous)):
+                    raise ReadAccessDenied("invalid persisted clock high-water")
                 if previous is not None and now < previous:
                     raise ReadAccessDenied("host clock moved backward; plan authority denied")
                 if previous is None or now > previous:

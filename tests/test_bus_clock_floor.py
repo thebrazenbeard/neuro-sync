@@ -349,6 +349,29 @@ class ClockFloorTests(unittest.TestCase):
             self.broker().grant_plan("new", KEY, plan=self.plan, expires_at_epoch=400)
         self.assertEqual(self.sidecar_path.read_bytes(), b"not a SQLite database")
 
+    def test_null_floor_with_existing_v2_grants_does_not_reinitialize(self):
+        owner = self.broker()
+        owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
+        with sqlite3.connect(self.sidecar_path) as db:
+            db.execute("UPDATE clock_state SET last_observed_epoch=NULL WHERE singleton=1")
+        self.clock[0] = 150
+        with self.assertRaisesRegex(ReadAccessDenied, "high-water missing"):
+            self.broker().execute_plan("once", "attempt", KEY, plan=self.plan)
+        self.assertEqual(self.calls, [])
+        self.assertIsNone(self.high_water())
+
+    def test_nonfinite_or_nonnumeric_persisted_floor_fails_closed(self):
+        owner = self.broker()
+        owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
+        for invalid in (float("-inf"), float("inf"), "not-a-clock"):
+            with sqlite3.connect(self.sidecar_path) as db:
+                db.execute("UPDATE clock_state SET last_observed_epoch=? WHERE singleton=1",
+                           (invalid,))
+            self.clock[0] = 150
+            with self.assertRaisesRegex(ReadAccessDenied, "invalid persisted clock"):
+                self.broker().execute_plan("once", "attempt", KEY, plan=self.plan)
+            self.assertEqual(self.calls, [])
+
     def test_missing_binding_with_existing_v2_grant_cannot_bootstrap(self):
         owner = self.broker()
         owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)

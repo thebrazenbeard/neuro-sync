@@ -38,6 +38,10 @@ Startup binds a fresh empty authority using a PENDING→READY main marker and
 matching sidecar UUID. A READY sidecar is opened `mode=rw` (no automatic
 re-creation). Missing, malformed or mismatched files deny plan operations;
 existing v2 grants without their binding cannot bootstrap a fresh floor.
+The persisted epoch must be a finite number: a NULL floor is allowed only
+before any v2 approval, and a NULL, infinity, negative infinity or text
+epoch in an authority with v2 history fails closed. These checks catch
+malformed data, not a deliberately restored valid older epoch.
 `revoke` deliberately does **not** depend on clock validity or sidecar
 availability; an owner can revoke even when the clock has regressed.
 The legacy key-only `grant`/`execute` path is not upgraded or made safer by
