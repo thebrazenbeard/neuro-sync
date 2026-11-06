@@ -12,6 +12,7 @@ import ast
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -91,6 +92,59 @@ def handler_sha256(tool) -> str:
         return ""
 
 
+def use_grant_path(db_path: Path, *, session: str, target: str) -> Path:
+    """Host-owned per-session grant fixture, separate from producer StateBus.
+
+    This is NOT authenticated custody; local file ownership/permissions are
+    prerequisites for any operational interpretation. No model may write it.
+    """
+    scope = sha(canonical_json({"session": session, "target": target}).encode())[:24]
+    return Path(str(db_path) + ".use-grant-" + scope + ".json")
+
+
+def _write_use_grant(path: Path, record: dict) -> None:
+    """Atomic-ish local fixture replace; no security against host administrators."""
+    temp = path.with_name(path.name + ".pending")
+    temp.write_text(canonical_json(record), encoding="utf8")
+    os.replace(temp, path)
+
+
+def revoke_use_grant(db_path: Path, *, session: str, target: str) -> None:
+    """Operator-only fixture action; receiver rechecks this at every use."""
+    path = use_grant_path(db_path, session=session, target=target)
+    data = json.loads(path.read_text(encoding="utf8"))
+    if data.get("active") is not True or data.get("session") != session or data.get("target") != target:
+        raise ValueError("no matching active host grant")
+    _write_use_grant(path, {**data, "active": False})
+
+
+def _granted_for_use(db_path: Path, *, session: str, target: str,
+                     capability: dict) -> bool:
+    """Fail closed unless current, scoped host-side grant matches the ref."""
+    path = use_grant_path(db_path, session=session, target=target)
+    try:
+        raw = path.read_bytes()
+        if len(raw) > 4096:
+            return False
+        def reject_duplicates(pairs):
+            item = {}
+            for key, value in pairs:
+                if key in item:
+                    raise ValueError("duplicate broker field")
+                item[key] = value
+            return item
+        data = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    return (isinstance(data, dict) and set(data) == {
+        "active", "session", "target", "ref", "handler_sha256",
+        "donor_artifact_sha256"} and data["active"] is True and
+        data["session"] == session and data["target"] == target and
+        data["ref"] == capability["ref"] and
+        data["handler_sha256"] == capability["handler_sha256"] and
+        data["donor_artifact_sha256"] == capability["donor_artifact_sha256"])
+
+
 def model_artifact(path: Path, *, node: str, style: str) -> None:
     if style not in {"terse", "annotated"}:
         raise ValueError("unsupported mock adapter style")
@@ -148,6 +202,11 @@ def execute(db_path: Path, artifact: Path, task: dict, *, session: str,
         return {"ok": False, "reason": "unknown-capability", "node": node["node"]}
     if tool is not _PINNED_HANDLER or capability["handler_sha256"] != handler_sha256(tool):
         return {"ok": False, "reason": "handler-mismatch", "node": node["node"]}
+    # Local StateBus COMMIT is not standing permission to use a tool. The
+    # separate test-owned broker grant must still be active right now.
+    if not _granted_for_use(db_path, session=session, target=target,
+                            capability=capability):
+        return {"ok": False, "reason": "no-active-use-grant", "node": node["node"]}
     try:
         result = tool(task["source"])
     except (SyntaxError, ValueError, OverflowError, RecursionError, UnicodeError):
@@ -233,8 +292,14 @@ def grant(ledger: StateLedger, donor_artifact: Path, *, source_head: str,
     ledger.validate(delta.event_id, validation, verify_validator=recognized)
     if revoke_after_validate:
         current["allowed"] = False
-    ledger.commit(delta.event_id, verify_validator=recognized,
-                  authorize_commit=lambda d, r: current["allowed"] and d == delta)
+    committed = ledger.commit(delta.event_id, verify_validator=recognized,
+                              authorize_commit=lambda d, r: current["allowed"] and d == delta)
+    if not committed.already_committed:
+        _write_use_grant(use_grant_path(Path(ledger.db_path), session=session,
+                                        target=recipient), {
+            "active": True, "session": session, "target": recipient, "ref": ref,
+            "handler_sha256": handler_sha256(_PINNED_HANDLER),
+            "donor_artifact_sha256": bound_sha})
     return delta
 
 
