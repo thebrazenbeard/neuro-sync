@@ -37,8 +37,9 @@ class HostBoundReadGateTests(unittest.TestCase):
         self.bound = HostBoundContext("operator-A", "node-B", "session-A")
         self.ledger = SpyLedger()
 
-    def gate(self, policy):
-        return HostBoundReadGate(self.ledger, context=self.bound, authorize=policy)
+    def gate(self, policy, handlers=None):
+        return HostBoundReadGate(self.ledger, context=self.bound,
+                                 authorize=policy, approved_handlers=handlers)
 
     def test_read_returns_only_bound_session_key_and_copy(self):
         checked = []
@@ -117,12 +118,16 @@ class HostBoundReadGateTests(unittest.TestCase):
         effects = []
         def authorize(check):
             return rights["use"] if check.operation == "use" else rights["read"]
-        gate = self.gate(authorize)
+        def host_handler(value):
+            effects.append(value)
+            return value["v"][0]
+        gate = self.gate(authorize, {"capabilities.alpha": host_handler})
         with self.assertRaises(ReadAccessDenied):
-            gate.use("capabilities.alpha", host_handler=lambda value: effects.append(value))
+            gate.use("capabilities.alpha")
         self.assertEqual(effects, [])
         rights["use"] = True
-        self.assertEqual(gate.use("capabilities.alpha", host_handler=lambda value: value["v"][0]), 1)
+        self.assertEqual(gate.use("capabilities.alpha"), 1)
+        self.assertEqual(effects, [{"v": [1]}])
 
     def test_revoked_after_read_before_use_blocks_effect(self):
         rights = {"allowed": True}
@@ -133,9 +138,44 @@ class HostBoundReadGateTests(unittest.TestCase):
                 return True
             return rights["allowed"]
         with self.assertRaises(ReadAccessDenied):
-            self.gate(authorize).use("capabilities.alpha",
-                                      host_handler=lambda value: effects.append(value))
+            self.gate(authorize, {"capabilities.alpha":
+                                  lambda value: effects.append(value)}).use("capabilities.alpha")
         self.assertEqual(effects, [])
+
+    def test_caller_cannot_inject_handler_at_invocation(self):
+        effects = []
+        gate = self.gate(lambda _: True,
+                         {"capabilities.alpha": lambda value: value["v"][0]})
+        with self.assertRaises(TypeError):
+            gate.use("capabilities.alpha", host_handler=lambda _: effects.append("injected"))
+        self.assertEqual(effects, [])
+        self.assertEqual(self.ledger.calls, [])
+
+    def test_missing_handler_denied_before_projection(self):
+        with self.assertRaises(ReadAccessDenied):
+            self.gate(lambda _: True).use("capabilities.alpha")
+        self.assertEqual(self.ledger.calls, [])
+
+    def test_host_handler_registry_is_snapshot_at_construction(self):
+        called = []
+        def approved(value):
+            called.append("approved")
+            return value["v"][0]
+        handlers = {"capabilities.alpha": approved}
+        gate = self.gate(lambda _: True, handlers)
+        handlers["capabilities.alpha"] = lambda _: called.append("replaced")
+        handlers["capabilities.other"] = lambda _: called.append("new")
+        self.assertEqual(gate.use("capabilities.alpha"), 1)
+        self.assertEqual(called, ["approved"])
+        with self.assertRaises(ReadAccessDenied):
+            gate.use("capabilities.other")
+
+    def test_constructor_rejects_untrusted_handler_registry_shapes(self):
+        for bad in ("some.handler", {"capabilities.alpha": "code"},
+                    {"capabilities/invalid": lambda _: True}):
+            with self.subTest(bad=str(bad)):
+                with self.assertRaises((TypeError, ReadAccessDenied)):
+                    self.gate(lambda _: True, bad)
 
     def test_invalid_or_missing_key_never_leaks_other_values(self):
         gate = self.gate(lambda _: True)
