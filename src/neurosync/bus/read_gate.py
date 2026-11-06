@@ -132,7 +132,7 @@ class HostBoundReadGate:
         try:
             payload = json.dumps(value, ensure_ascii=False, allow_nan=False,
                                  sort_keys=True, separators=(",", ":")).encode("utf-8")
-        except (TypeError, ValueError, UnicodeError) as exc:
+        except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
             raise ReadAccessDenied("state value not bounded JSON") from exc
         if len(payload) > MAX_READ_VALUE_BYTES:
             raise ReadAccessDenied("state value too large")

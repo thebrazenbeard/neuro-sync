@@ -210,6 +210,16 @@ class HostBoundReadGateTests(unittest.TestCase):
         with self.assertRaises(ReadAccessDenied):
             self.gate(lambda _: True).read("capabilities.alpha")
 
+    def test_overdeep_projection_denied_without_unhandled_encoder_failure(self):
+        # The depth may exhaust the JSON encoder *before* the 8 KiB output
+        # limit can be inspected, and must never leak RecursionError to caller.
+        nested = 0
+        for _ in range(10_000):
+            nested = [nested]
+        self.ledger.values = {"capabilities.alpha": nested}
+        with self.assertRaisesRegex(ReadAccessDenied, "bounded JSON"):
+            self.gate(lambda _: True).read("capabilities.alpha")
+
     def test_constructor_requires_scoped_host_binding_and_policy(self):
         for kwargs in (
             {"context": self.bound, "authorize": None},
