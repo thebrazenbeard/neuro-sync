@@ -1,11 +1,14 @@
 """Read-only synthetic PEFT artifacts; no pretrained weights or host access."""
 
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from neurosync import peft_preflight as module
 from neurosync.peft_preflight import inspect_peft_lora_artifacts
 
 
@@ -108,6 +111,69 @@ class PEFTPreflightTests(unittest.TestCase):
                 self.write_artifacts(config_text=json.dumps({**self.config, **update}))
                 with self.assertRaises(ValueError):
                     inspect_peft_lora_artifacts(self.root)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX symlink fixture")
+    def test_refuses_symlinked_ancestor_directory(self):
+        alias = self.root.parent / (self.root.name + "-alias-parent")
+        alias.symlink_to(self.root.parent, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "symlink|linked|ROOT|root|directory"):
+            inspect_peft_lora_artifacts(alias / self.root.name)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX symlink fixture")
+    def test_refuses_config_symlink_swapped_during_path_precheck(self):
+        outside = self.root.parent / (self.root.name + "-outside.json")
+        outside.write_text(json.dumps(self.config), encoding="utf8")
+        original = module._open_secure_leaf
+        triggered = False
+
+        def swap(root_fd, name, limit):
+            nonlocal triggered
+            file_fd = original(root_fd, name, limit)
+            if name == "adapter_model.safetensors" and not triggered:
+                triggered = True
+                target = self.root / "adapter_config.json"
+                target.unlink()
+                target.symlink_to(outside)
+            return file_fd
+
+        with patch.object(module, "_open_secure_leaf", side_effect=swap):
+            with self.assertRaises(ValueError):
+                inspect_peft_lora_artifacts(self.root)
+        self.assertTrue(triggered)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX hardlink fixture")
+    def test_refuses_hardlinked_adapter_config(self):
+        outside = self.root.parent / (self.root.name + "-hardlink")
+        inside = self.root / "adapter_config.json"
+        inside.rename(outside)
+        os.link(outside, inside)
+        with self.assertRaises(ValueError):
+            inspect_peft_lora_artifacts(self.root)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX directory replacement fixture")
+    def test_refuses_original_directory_relocated_during_scan(self):
+        moved = self.root.parent / (self.root.name + "-relocated")
+        original = module._open_secure_leaf
+        triggered = False
+
+        def relocate(root_fd, name, limit):
+            nonlocal triggered
+            file_fd = original(root_fd, name, limit)
+            if name == "adapter_model.safetensors" and not triggered:
+                triggered = True
+                self.root.rename(moved)
+                self.root.mkdir()
+                # The inspected old inodes are still available via dirfds.
+                # Fresh pathname now names an unrelated adapter directory.
+                (self.root / "adapter_config.json").write_text(
+                    json.dumps(self.config), encoding="utf8")
+                (self.root / "adapter_model.safetensors").write_bytes(b"not-a-real-model")
+            return file_fd
+
+        with patch.object(module, "_open_secure_leaf", side_effect=relocate):
+            with self.assertRaisesRegex(ValueError, "directory changed"):
+                inspect_peft_lora_artifacts(self.root)
+        self.assertTrue(triggered)
 
 
 if __name__ == "__main__":
