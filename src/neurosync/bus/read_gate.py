@@ -136,8 +136,14 @@ class HostBoundReadGate:
             raise ReadAccessDenied("state value not bounded JSON") from exc
         if len(payload) > MAX_READ_VALUE_BYTES:
             raise ReadAccessDenied("state value too large")
-        self._check("read-post", key, value)
-        return deepcopy(value)
+        # Bind the post-read authorization and delivered value to the exact
+        # bounded JSON snapshot.  A ledger projection may contain references
+        # to mutable state; returning a later copy of that reference would
+        # allow a mutation during the policy callback to change the value
+        # after it was checked and size-limited.
+        snapshot = json.loads(payload.decode("utf-8"))
+        self._check("read-post", key, snapshot)
+        return snapshot
 
     def use(self, state_key: str) -> Any:
         """Select a prebound host handler and reauthorize before its effect.

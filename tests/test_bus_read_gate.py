@@ -89,6 +89,34 @@ class HostBoundReadGateTests(unittest.TestCase):
         self.assertEqual(returned, {"v": [1]})
         self.assertEqual(self.ledger.values["capabilities.alpha"], {"v": [1]})
 
+    def test_post_policy_projection_mutation_cannot_change_authorized_snapshot(self):
+        """The delivered bytes must be the same bounded value approved post-read.
+
+        Even a source-only host callback can indirectly mutate the ledger's
+        projection during authorization.  That must not change the value
+        returned after the post-check or supplied to an approved handler.
+        """
+        checks = []
+
+        def authorize(check):
+            if check.operation == "read-post":
+                checks.append(check.value)
+                self.ledger.values["capabilities.alpha"]["v"].append(99)
+            return True
+
+        delivered = []
+        gate = self.gate(authorize, {
+            "capabilities.alpha": lambda value: delivered.append(value) or value["v"],
+        })
+        self.assertEqual(gate.read("capabilities.alpha"), {"v": [1]})
+        self.assertEqual(checks, [{"v": [1]}])
+        self.assertEqual(self.ledger.values["capabilities.alpha"], {"v": [1, 99]})
+        # Fresh gate/ledger keeps the use-path test independent of the first
+        # read while exercising the same read-post authorization window.
+        self.ledger.values = {"capabilities.alpha": {"v": [1]}}
+        self.assertEqual(gate.use("capabilities.alpha"), [1])
+        self.assertEqual(delivered, [{"v": [1]}])
+
     def test_policy_exception_fails_closed_without_projection(self):
         def broken(_check):
             raise RuntimeError("private grant store inaccessible")
