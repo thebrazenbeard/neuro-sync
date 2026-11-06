@@ -12,6 +12,8 @@ replay after process restart, at the cost of a fail-closed/ambiguous receipt
 if a process dies after consumption and before recording its effect. External
 effects cannot be transactionally rolled back by SQLite. This broker promises
 at-most-one *handler attempt* per invocation ID, never exactly-once delivery.
+Handled projection/serialization failures before the handler are recorded as
+denied without invoking it; a real process crash can still leave `claimed`.
 
 The older ``HostBoundReadGate.use`` remains a cooperative, non-atomic source
 seam; protected effects should go through this separate broker instead.
@@ -58,7 +60,7 @@ def _encoded(value: Any, *, limit: int = MAX_READ_VALUE_BYTES) -> bytes:
     try:
         result = json.dumps(value, ensure_ascii=False, allow_nan=False,
                             sort_keys=True, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError, UnicodeError) as exc:
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise ReadAccessDenied("effect value is not bounded JSON") from exc
     if len(result) > limit:
         raise ReadAccessDenied("effect value exceeds host limit")
@@ -304,7 +306,11 @@ class HostOwnedEffectBroker:
                     self._record(db, invocation_id, status="denied", finished=self._now())
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
-                projection = self._ledger.project(self._context.target_id, self._context.session_id)
+                try:
+                    projection = self._ledger.project(self._context.target_id,
+                                                      self._context.session_id)
+                except Exception as exc:
+                    raise ReadAccessDenied("host ledger projection unavailable") from exc
                 if type(projection) is not dict or state_key not in projection:
                     raise ReadAccessDenied("effect state unavailable")
                 state = json.loads(_encoded(projection[state_key]).decode("utf-8"))
