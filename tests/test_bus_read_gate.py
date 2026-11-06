@@ -156,6 +156,18 @@ class HostBoundReadGateTests(unittest.TestCase):
             self.gate(lambda _: True).use("capabilities.alpha")
         self.assertEqual(self.ledger.calls, [])
 
+    def test_denied_use_cannot_enumerate_host_handler_registry(self):
+        """Unknown and installed handler names are indistinguishable pre-grant."""
+        gate = self.gate(lambda _: False,
+                         {"capabilities.alpha": lambda value: value["v"][0]})
+        errors = []
+        for key in ("capabilities.alpha", "capabilities.unknown"):
+            with self.assertRaises(ReadAccessDenied) as caught:
+                gate.use(key)
+            errors.append(str(caught.exception))
+        self.assertEqual(errors, ["host policy denied", "host policy denied"])
+        self.assertEqual(self.ledger.calls, [])
+
     def test_host_handler_registry_is_snapshot_at_construction(self):
         called = []
         def approved(value):
