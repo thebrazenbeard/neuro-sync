@@ -139,11 +139,17 @@ class ZeroWeightPilotTests(unittest.TestCase):
             pilot.HOST_CAPABILITIES[pilot.CAP_REF] = original
 
     def test_stale_state_rejected_after_fixture_clock_advance(self):
-        self.grant(valid_until=self.now + 1)
+        # A one-second TTL based on setUp's earlier timestamp races with CI
+        # process startup and source-head verification before PROPOSE. Refresh
+        # the clock immediately before grant and leave a bounded 4s window.
+        self.now = int(time.time())
+        deadline = self.now + 4
+        self.grant(valid_until=deadline)
         self.assertTrue(pilot.execute(self.db, self.b, self.task, session="study", now=self.now)["ok"])
         # Public receiver subprocess only uses host wall time; it cannot
         # accept an untrusted CLI clock override to resurrect expired state.
-        time.sleep(max(0, self.now + 1 - time.time()) + 0.1)
+        # Wait against REAL time; never patch the runtime's clock for this probe.
+        time.sleep(max(0.0, deadline - time.time()) + 0.15)
         self.assertEqual(self.receive()["reason"], "stale-capability")
 
     def test_expiry_backdating_cli_option_is_not_accepted(self):
