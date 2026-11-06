@@ -39,5 +39,14 @@ jobs:
       - name: Verify client-mediated StateBus bridge
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_bridge.py' -v
 
-      - name: Verify zero-weight scripted StateBus pilot
+      - name: Verify Node.js for cross-runtime restricted-wire vectors
+        run: node --version
+
+      - name: Verify restricted cross-runtime wire profile
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_wire.py' -v
+
+      - name: Verify host-bound read and use gate mechanics
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_read_gate.py' -v
+
+      - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
