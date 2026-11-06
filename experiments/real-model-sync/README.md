@@ -19,7 +19,8 @@ python experiments/real-model-sync/pilot.py run \
   --suite /tmp/ns-local-pilot-suite.json \
   --out-dir /tmp/ns-local-pilot-run \
   --backend openai --endpoint http://127.0.0.1:11435 \
-  --model YOUR_EXACT_LOCAL_MODEL_ID
+  --model YOUR_EXACT_LOCAL_MODEL_ID \
+  --timeout 30 --max-tokens 96 --prompt-profile compact
 python -m unittest discover -s experiments/real-model-sync -p 'test_*.py' -v
 ```
 
@@ -27,6 +28,61 @@ For a small bounded host smoke check before committing to 84 potential model
 requests, append `--max-cases 1 --arms N,V,P,H` to `run`. The receipt will say
 `EXPLORATORY_INCOMPLETE`: this is not an acceptance trial and may be biased by
 its first scenario. Full 12×7 comparisons require explicit workload readiness.
+
+### Bounded latency and prompt profiles
+
+`--prompt-profile compact` (new default) sends only the puzzle start, goal,
+all 13 opaque handles and the exact arm-specific external state. A common
+system message still specifies a maximum of two ordered tool calls, explicit
+dependency fields, and optional abstention when the solution is uncertain.
+Crucially N (no state) may still guess a listed opaque handle; the compact
+instruction does **not** mandate abstention simply because external state is
+absent. The same
+profile, token cap and timeout are applied **identically to every arm**. This
+removes redundant task/schema prose but does **not** shorten any arm's data,
+reveal private scenario labels or change oracle/grant execution.
+
+`--prompt-profile legacy` retains the original longer v0 prompt as a separate
+configuration for comparisons. Do not pool the two profiles as if they were
+identical experimental treatments or attribute performance differences purely
+to prompt bytes: the system wording and few-shot shape also differ. For one
+generated scenario, prompt-message JSON was 1016 vs 778 bytes (N), 1746 vs
+1508 (R), and 1549 vs 1311 (V); exact sizes vary with scenario content.
+`--max-tokens` accepts 32–256 tokens and
+sets OpenAI-compatible `max_tokens` or Ollama `options.num_predict`;
+`--timeout` accepts up to 60 seconds per request. The default is 96 output
+tokens and 30 seconds. Use a fixed profile/budget for a full trial and record
+machine load. Higher timeouts can cost local CPU time, not cloud fees when the
+configured endpoint is genuinely local. No service lifecycle is changed.
+At the 32-token minimum, a correct two-step JSON reply may truncate; treat
+that as a request-budget/invalid-reply outcome, not reasoning incapacity.
+
+Each completed model adapter call records request byte count, prompt digest,
+profile, configured token cap/timeout, adapter latency and response digest.
+Even on a transport or parse failure the adapter records its prompt digest,
+request bytes, latency and failure class. The harness additionally measures
+`model_call_elapsed_ms` on the caller side independently of untrusted adapter
+metadata. Failures execute **zero** tools and do not count as governance
+success. An elapsed-time receipt does not attest the server's actual token
+generation, GPU/CPU use, or model identity.
+
+The loader now recomputes whether each frozen goal is reachable in one or two
+tool calls, rejecting mismatched `expected_possible` labels even if a modified
+file carries a newly computed `.sha256` sidecar. This protects against that
+specific scoring false positive, **not** a malicious but mathematically
+consistent suite or third-party custody failure. The runner rejects a forged
+`real_endpoint` declaration when the caller is not the exact local HTTP client
+adapter; recognizing the adapter still does **not** authenticate a real neural
+serving process. Arm order now follows an ex ante 7-position cyclic schedule,
+with position counts differing by at most one across 12 cases.
+
+**Known negative baseline:** A prior exploratory VN2 Granite 3.3 2B Q4_K_M
+run using the legacy prompt and a 12-second per-call timeout returned four
+`TimeoutError` failures across N/V/P/H and produced no plans. This is a
+source-reported exploratory runtime-feasibility failure; it is neither
+receiver-learning evidence nor a reason to silently omit those arms. The
+compact profile and lower token cap are presently **source-only improvements**
+until retested against a verified ready host. No predicted speedup is claimed.
 
 `freeze` creates a private synthetic suite and `.sha256` self-commitment;
 it will never overwrite an existing suite. Keep the private suite file out
@@ -69,6 +125,8 @@ call does NOT count as gate enforcement, even if no effect happened:
 | X | The description map, but all host effect grants revoked at use time |
 
 P is constructed without any bus read and H is prepared before V. The
+X grant is an in-process `ToolGrant` test, not a test of the separate
+HostOwnedEffectBroker or an OS authorization boundary. The
 description map exposes tool semantics, **not a selected plan or expected
 answer**. Host-fixture StateBus validation persists actual bounded tool-effect
 probe receipts and a canonical SHA-256 source-file manifest; its Git HEAD OID

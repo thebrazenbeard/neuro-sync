@@ -57,6 +57,17 @@ class PilotTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pilot.load_suite(self.suite_path)
 
+    def test_rehashed_forged_reachability_label_cannot_score_false_abstention(self):
+        forged = json.loads(self.suite_path.read_text())
+        # Attackers can rehash the suite, so a matching sidecar is not proof
+        # that a label still matches the executable oracle's reachable set.
+        impossible = next(case for case in forged["cases"] if not case["expected_possible"])
+        impossible["expected_possible"] = True
+        self.suite_path.write_text(pilot.canonical_json(forged) + "\n")
+        self.suite_path.with_suffix(".json.sha256").write_text(pilot.sha(forged) + "\n")
+        with self.assertRaisesRegex(ValueError, "reachability label"):
+            pilot.load_suite(self.suite_path)
+
     def test_receiver_prompt_excludes_private_expected_and_registry(self):
         request = pilot.model_request(self.case, {})
         self.assertEqual(request["candidate_handles"], self.case["handles"])
@@ -207,6 +218,105 @@ class PilotTests(unittest.TestCase):
                     "http://127.0.0.1:11435/evil", "http://user:pass@localhost:11435"):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 pilot.local_endpoint(url, "openai")
+
+    def test_compact_profile_reduces_bytes_without_leaking_or_changing_controls(self):
+        state = {"operations": self.case["registry"]}
+        task = pilot.model_request(self.case, state)
+        compact = pilot._model_messages(task, "compact")
+        legacy = pilot._model_messages(task, "legacy")
+        self.assertLess(len(pilot.canonical_json(compact)), len(pilot.canonical_json(legacy)))
+        delivered = json.loads(compact[1]["content"])
+        self.assertEqual(delivered, {"start": self.case["start"],
+                                     "goal": self.case["goal"],
+                                     "handles": self.case["handles"], "state": state})
+        self.assertEqual([m["role"] for m in compact], ["system", "user"])
+        self.assertEqual([m["role"] for m in legacy], ["system", "user"])
+        neutral_instruction = compact[0]["content"].lower()
+        self.assertIn("you may abstain", neutral_instruction)
+        for biasing_phrase in ("state only", "do not invent", "unknown handles",
+                               "if unknown", "must abstain"):
+            self.assertNotIn(biasing_phrase, neutral_instruction)
+        for profile in (compact, legacy):
+            text = pilot.canonical_json(profile)
+            for secret in ("expected_possible", "gold_length", "registry"):
+                self.assertNotIn(secret, text)
+
+        # Every arm uses the same formatting and same handles; only the
+        # authorized external-state slot differs (including distorted D).
+        for arm, arm_state in (("N", {}),
+                               ("R", {"observations": pilot._raw_probes(self.case)}),
+                               ("V", state), ("P", state), ("H", state),
+                               ("D", {"operations": {"opaque": "wrong"}}), ("X", state)):
+            with self.subTest(arm=arm):
+                delivered = json.loads(pilot._model_messages(
+                    pilot.model_request(self.case, arm_state), "compact")[1]["content"])
+                self.assertEqual(delivered["handles"], self.case["handles"])
+                self.assertEqual(delivered["start"], self.case["start"])
+                self.assertEqual(delivered["goal"], self.case["goal"])
+                self.assertEqual(delivered["state"], arm_state)
+
+    def test_request_budgets_apply_to_both_backends_and_report_latency(self):
+        class Response:
+            def __init__(self, raw):
+                self.raw = raw
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, n): return self.raw
+
+        for backend in ("ollama", "openai"):
+            with self.subTest(backend=backend):
+                captured = {}
+                class Opener:
+                    def open(self, request, timeout):
+                        captured["timeout"] = timeout
+                        captured["body"] = json.loads(request.data)
+                        response = ({"message": {"content": '{"steps":[],"abstain":true}'}}
+                                    if backend == "ollama" else {
+                                        "choices": [{"message": {"content":
+                                                     '{"steps":[],"abstain":true}'}}]})
+                        return Response(json.dumps(response).encode())
+
+                client = pilot.LocalModelClient("http://127.0.0.1:11435", backend,
+                                                "fixture-no-model", timeout=5,
+                                                max_tokens=64)
+                client.opener = Opener()
+                response, trace = client(pilot.model_request(self.case, {}))
+                self.assertIn('"abstain":true', response)
+                self.assertEqual(captured["timeout"], 5)
+                self.assertEqual(trace["timeout_seconds"], 5)
+                self.assertEqual(trace["max_tokens"], 64)
+                self.assertEqual(trace["request_bytes"], len(
+                    pilot.canonical_json(captured["body"]).encode()))
+                self.assertGreaterEqual(trace["latency_ms"], 0)
+                self.assertEqual(trace["outcome"], "received_text")
+                options = captured["body"].get("options", captured["body"])
+                self.assertEqual(options.get("num_predict", options.get("max_tokens")), 64)
+
+    def test_timeout_receipt_preserves_host_control_scores(self):
+        class TimeoutOpener:
+            def open(self, request, timeout):
+                raise TimeoutError("synthetic fixture timeout, NOT A REAL MODEL")
+
+        client = pilot.LocalModelClient("http://127.0.0.1:11435", "openai",
+                                        "fixture-no-model", timeout=0.5)
+        client.opener = TimeoutOpener()
+        result = pilot.run_one(self.case, "X", {"operations": self.case["registry"]}, client)
+        self.assertEqual(result["error"], "TimeoutError")
+        self.assertFalse(result["success"])
+        self.assertFalse(result["gate_tested"])
+        self.assertFalse(result["governance_denial_success"])
+        self.assertEqual(result["effects"], 0)
+        self.assertEqual(result["transport_trace"]["timeout_seconds"], 0.5)
+        self.assertGreaterEqual(result["transport_trace"]["latency_ms"], 0)
+        self.assertGreaterEqual(result["model_call_elapsed_ms"], 0)
+        self.assertEqual(result["transport_trace"]["outcome"], "transport_or_parse_failure")
+
+    def test_invalid_request_budget_rejected_before_network(self):
+        for kwargs in ({"timeout": 0}, {"timeout": 61}, {"timeout": float("nan")},
+                       {"max_tokens": 31}, {"max_tokens": 257},
+                       {"max_tokens": True}, {"prompt_profile": "unknown"}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                pilot.LocalModelClient("http://127.0.0.1:11435", "openai", "fixture", **kwargs)
 
 
 if __name__ == "__main__":
