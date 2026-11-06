@@ -81,8 +81,15 @@ run using the legacy prompt and a 12-second per-call timeout returned four
 `TimeoutError` failures across N/V/P/H and produced no plans. This is a
 source-reported exploratory runtime-feasibility failure; it is neither
 receiver-learning evidence nor a reason to silently omit those arms. The
-compact profile and lower token cap are presently **source-only improvements**
-until retested against a verified ready host. No predicted speedup is claimed.
+compact profile and lower token cap are **source-mechanics improvements**;
+a subsequent single 1,471-byte compact V request on the existing VN2 Granite
+service still timed out at 20 seconds without returning a typed plan. Separate
+streaming diagnostic probes against that service completed for a tiny 242-byte
+prompt (1.28 seconds) and a 796-byte catalog prompt (10.65 seconds), both
+with an eight-token output cap. Those probes are not comparable to the
+structured-plan trial or evidence of semantic success; see the
+[execution-status ledger](../../docs/EXPERIMENT_STATUS.md) for exact hashes,
+source version and limitations. No general speedup is claimed.
 
 `freeze` creates a private synthetic suite and `.sha256` self-commitment;
 it will never overwrite an existing suite. Keep the private suite file out

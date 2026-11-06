@@ -74,6 +74,60 @@ def _hash(value: Any) -> str:
     return sha256(_encoded(value)).hexdigest()
 
 
+def _plan_encoded(value: Any) -> bytes:
+    """Bound the *input traversal* before JSON serialization can allocate.
+
+    This does not defend against hostile concurrent mutation of a Python
+    object inside the same process; process isolation remains host duty.
+    """
+    nodes = 0
+    active: set[int] = set()
+
+    def visit(item: Any, depth: int) -> None:
+        nonlocal nodes
+        nodes += 1
+        if nodes > 4096 or depth > 32:
+            raise ReadAccessDenied("plan exceeds bounded JSON complexity")
+        if type(item) is str:
+            if len(item) > MAX_READ_VALUE_BYTES:
+                raise ReadAccessDenied("plan scalar exceeds host limit")
+        elif item is None or type(item) is bool:
+            return
+        elif type(item) is int:
+            if item.bit_length() > MAX_READ_VALUE_BYTES * 3:
+                raise ReadAccessDenied("plan integer exceeds host limit")
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise ReadAccessDenied("plan value is not finite")
+        elif type(item) in (list, dict):
+            ident = id(item)
+            if ident in active:
+                raise ReadAccessDenied("plan contains cyclic JSON")
+            if len(item) > 4096:
+                raise ReadAccessDenied("plan exceeds bounded JSON complexity")
+            active.add(ident)
+            try:
+                if type(item) is list:
+                    for child in item:
+                        visit(child, depth + 1)
+                else:
+                    for key, child in item.items():
+                        if type(key) is not str or len(key) > MAX_READ_VALUE_BYTES:
+                            raise ReadAccessDenied("plan has invalid object key")
+                        visit(key, depth + 1)
+                        visit(child, depth + 1)
+            finally:
+                active.remove(ident)
+        else:
+            raise ReadAccessDenied("plan value is not JSON")
+
+    visit(value, 0)
+    try:
+        return _encoded(value)
+    except RecursionError as exc:
+        raise ReadAccessDenied("plan exceeds bounded JSON depth") from exc
+
+
 @dataclass(frozen=True)
 class ApprovedEffect:
     """Host-installed handler with a *host asserted* artifact/source binding."""
@@ -91,6 +145,26 @@ class ApprovedEffect:
             raise ValueError("invalid source commit OID")
 
 
+@dataclass(frozen=True)
+class ApprovedPlanEffect:
+    """Host-installed effect that consumes the broker's copied, checked plan.
+
+    Artifact/source provenance is host-asserted, not independently attested.
+    """
+
+    handler: Callable[[Any, Any], Any]
+    handler_artifact_sha256: str
+    source_git_oid: str
+
+    def __post_init__(self) -> None:
+        if not callable(self.handler):
+            raise TypeError("host plan handler must be callable")
+        if type(self.handler_artifact_sha256) is not str or not HEX64.fullmatch(self.handler_artifact_sha256):
+            raise ValueError("invalid plan handler artifact SHA-256")
+        if type(self.source_git_oid) is not str or not GIT_OID.fullmatch(self.source_git_oid):
+            raise ValueError("invalid plan handler source OID")
+
+
 class EffectAttemptFailed(RuntimeError):
     """Handler failed; invocation remains consumed, even if effects happened."""
 
@@ -106,7 +180,8 @@ class HostOwnedEffectBroker:
     def __init__(self, database_path: str | Path, ledger: Any, *,
                  context: HostBoundContext,
                  approved_handlers: Mapping[str, ApprovedEffect],
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 approved_plan_handlers: Mapping[str, ApprovedPlanEffect] | None = None) -> None:
         if not callable(getattr(ledger, "project", None)):
             raise TypeError("host ledger projection required")
         if not isinstance(context, HostBoundContext):
@@ -128,6 +203,17 @@ class HostOwnedEffectBroker:
                 raise TypeError("unapproved handler descriptor")
             handlers[key] = effect
         self._handlers = MappingProxyType(handlers)
+        if approved_plan_handlers is None:
+            approved_plan_handlers = {}
+        if not isinstance(approved_plan_handlers, Mapping):
+            raise TypeError("approved plan handler mapping required")
+        plan_handlers: dict[str, ApprovedPlanEffect] = {}
+        for key, effect in approved_plan_handlers.items():
+            _key(key)
+            if not isinstance(effect, ApprovedPlanEffect):
+                raise TypeError("unapproved plan handler descriptor")
+            plan_handlers[key] = effect
+        self._plan_handlers = MappingProxyType(plan_handlers)
         self._ledger = ledger
         self._context = context
         self._clock = clock
@@ -140,6 +226,20 @@ class HostOwnedEffectBroker:
                     target TEXT NOT NULL, session TEXT NOT NULL,
                     state_key TEXT NOT NULL, expires REAL NOT NULL,
                     revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+                    PRIMARY KEY (principal,target,session,grant_id)
+                );
+                -- Separate table keeps plan approvals invisible to older
+                -- binaries which only know how to query legacy grants.
+                CREATE TABLE IF NOT EXISTS plan_grants (
+                    grant_id TEXT NOT NULL, principal TEXT NOT NULL,
+                    target TEXT NOT NULL, session TEXT NOT NULL,
+                    state_key TEXT NOT NULL, expires REAL NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+                    plan_sha256 TEXT NOT NULL,
+                    planned_state_sha256 TEXT NOT NULL,
+                    plan_handler_artifact_sha256 TEXT NOT NULL,
+                    plan_handler_source_git_oid TEXT NOT NULL,
+                    plan_consumed_invocation_id TEXT,
                     PRIMARY KEY (principal,target,session,grant_id)
                 );
                 CREATE TABLE IF NOT EXISTS attempts (
@@ -156,15 +256,20 @@ class HostOwnedEffectBroker:
                     PRIMARY KEY (principal,target,session,invocation_id)
                 );
             """)
-            # Older host-owned databases lack the classification column.
-            # Serialize inspection + migration across concurrent broker starts.
+            # Existing databases may lack either independently introduced
+            # nullable column. Serialize migrations for concurrent starts;
+            # neither historical rows nor replay claims may be discarded.
             db.execute("BEGIN IMMEDIATE")
             try:
-                columns = {row["name"] for row in db.execute("PRAGMA table_info(attempts)")}
-                if "failure_class" not in columns:
-                    db.execute("ALTER TABLE attempts ADD COLUMN failure_class TEXT "
-                               "CHECK(failure_class IS NULL OR failure_class IN "
-                               "('permission','infrastructure','handler'))")
+                for table, columns in {"attempts": {
+                    "plan_sha256": "TEXT",
+                    "failure_class": "TEXT CHECK(failure_class IS NULL OR failure_class IN "
+                                     "('permission','infrastructure','handler'))",
+                }}.items():
+                    present = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+                    for name, kind in columns.items():
+                        if name not in present:
+                            db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
                 db.commit()
             except Exception:
                 db.rollback()
@@ -212,10 +317,65 @@ class HostOwnedEffectBroker:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
+                if db.execute("SELECT 1 FROM plan_grants WHERE grant_id=? AND principal=? "
+                              "AND target=? AND session=?", (
+                                  grant_id, self._context.principal_id,
+                                  self._context.target_id, self._context.session_id)).fetchone():
+                    raise ReadAccessDenied("grant ID already used")
                 db.execute("INSERT INTO grants(grant_id,principal,target,session,state_key,expires) "
                            "VALUES(?,?,?,?,?,?)", (
                     grant_id, self._context.principal_id, self._context.target_id,
                     self._context.session_id, state_key, float(expires_at_epoch)))
+                db.commit()
+            except sqlite3.IntegrityError as exc:
+                db.rollback()
+                raise ReadAccessDenied("grant ID already used") from exc
+
+    def grant_plan(self, grant_id: str, state_key: str, *,
+                   plan: Any, expires_at_epoch: float) -> None:
+        """Host-only approval of exact bounded plan, state and installed handler.
+
+        This does not authenticate a remote caller or make external ledger
+        changes atomic with this authority database.
+        """
+        self._assert_not_handler()
+        grant_id, state_key = _identifier(grant_id), _key(state_key)
+        approved = self._plan_handlers.get(state_key)
+        if approved is None:
+            raise ReadAccessDenied("no host-approved plan handler")
+        if type(expires_at_epoch) not in (int, float) or not math.isfinite(expires_at_epoch):
+            raise ValueError("finite grant expiry required")
+        if expires_at_epoch <= self._now():
+            raise ReadAccessDenied("grant already expired")
+        # Canonical bytes are computed by the host broker. No supplied plan
+        # hash is trusted, and mutations of the caller's object cannot modify
+        # this approval's digest.
+        plan_hash = sha256(_plan_encoded(plan)).hexdigest()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                try:
+                    projection = self._ledger.project(self._context.target_id,
+                                                      self._context.session_id)
+                except Exception as exc:
+                    raise ReadAccessDenied("host ledger projection unavailable") from exc
+                if type(projection) is not dict or state_key not in projection:
+                    raise ReadAccessDenied("effect state unavailable")
+                state_hash = sha256(_plan_encoded(projection[state_key])).hexdigest()
+                if self._now() >= expires_at_epoch:
+                    raise ReadAccessDenied("grant already expired")
+                if db.execute("SELECT 1 FROM grants WHERE grant_id=? AND principal=? "
+                              "AND target=? AND session=?", (
+                                  grant_id, self._context.principal_id,
+                                  self._context.target_id, self._context.session_id)).fetchone():
+                    raise ReadAccessDenied("grant ID already used")
+                db.execute("INSERT INTO plan_grants(grant_id,principal,target,session,state_key,expires,"
+                           "plan_sha256,planned_state_sha256,plan_handler_artifact_sha256,"
+                           "plan_handler_source_git_oid) VALUES(?,?,?,?,?,?,?,?,?,?)", (
+                               grant_id, self._context.principal_id, self._context.target_id,
+                               self._context.session_id, state_key, float(expires_at_epoch),
+                               plan_hash, state_hash, approved.handler_artifact_sha256,
+                               approved.source_git_oid))
                 db.commit()
             except sqlite3.IntegrityError as exc:
                 db.rollback()
@@ -229,25 +389,42 @@ class HostOwnedEffectBroker:
             db.execute("BEGIN IMMEDIATE")
             scope = (grant_id, self._context.principal_id,
                      self._context.target_id, self._context.session_id)
-            row = db.execute("SELECT grant_id FROM grants WHERE grant_id=? "
-                             "AND principal=? AND target=? AND session=?", scope).fetchone()
-            if row is None:
+            legacy = db.execute("SELECT 1 FROM grants WHERE grant_id=? "
+                                "AND principal=? AND target=? AND session=?", scope).fetchone()
+            planned = db.execute("SELECT 1 FROM plan_grants WHERE grant_id=? "
+                                 "AND principal=? AND target=? AND session=?", scope).fetchone()
+            if legacy is None and planned is None:
                 db.rollback()
                 raise ReadAccessDenied("grant unavailable")
-            db.execute("UPDATE grants SET revoked=1 WHERE grant_id=? "
-                       "AND principal=? AND target=? AND session=?", scope)
+            for table in ("grants", "plan_grants"):
+                db.execute(f"UPDATE {table} SET revoked=1 WHERE grant_id=? "
+                           "AND principal=? AND target=? AND session=?", scope)
             db.commit()
 
-    def _granted(self, db: sqlite3.Connection, grant_id: str, key: str, now: float) -> bool:
-        row = db.execute("SELECT * FROM grants WHERE grant_id=? AND principal=? "
+    def _granted(self, db: sqlite3.Connection, grant_id: str, key: str, now: float, *,
+                 plan_hash: str | None = None,
+                 plan_effect: ApprovedPlanEffect | None = None,
+                 plan_invocation_id: str | None = None) -> bool:
+        table = "grants" if plan_hash is None else "plan_grants"
+        row = db.execute(f"SELECT * FROM {table} WHERE grant_id=? AND principal=? "
                          "AND target=? AND session=?", (
                              grant_id, self._context.principal_id,
                              self._context.target_id, self._context.session_id)).fetchone()
-        return bool(row is not None and row["principal"] == self._context.principal_id
+        authorized = bool(row is not None and row["principal"] == self._context.principal_id
                     and row["target"] == self._context.target_id
                     and row["session"] == self._context.session_id
                     and row["state_key"] == key and not row["revoked"]
                     and now < row["expires"])
+        if not authorized:
+            return False
+        if plan_hash is None:
+            return True
+        return bool(plan_effect is not None
+                    and row["plan_sha256"] == plan_hash
+                    and row["planned_state_sha256"] is not None
+                    and row["plan_handler_artifact_sha256"] == plan_effect.handler_artifact_sha256
+                    and row["plan_handler_source_git_oid"] == plan_effect.source_git_oid
+                    and row["plan_consumed_invocation_id"] == plan_invocation_id)
 
     def _record(self, db: sqlite3.Connection, invocation_id: str,
                 *, status: str, finished: float, state_hash: str | None = None,
@@ -278,6 +455,9 @@ class HostOwnedEffectBroker:
         # failure receipts gain an explicit non-success classification.
         if failure_class is not None:
             receipt["failure_class"] = failure_class
+        if row["plan_sha256"] is not None:
+            receipt["version"] = 2
+            receipt["plan_sha256"] = row["plan_sha256"]
         receipt_hash = _hash(receipt)
         db.execute("UPDATE attempts SET status=?, finished=?, state_sha256=?, "
                    "result_sha256=?, receipt_sha256=?, failure_class=? WHERE invocation_id=? "
@@ -377,6 +557,116 @@ class HostOwnedEffectBroker:
                     db.commit()
                 raise
 
+    def execute_plan(self, grant_id: str, invocation_id: str, state_key: str, *,
+                     plan: Any) -> tuple[Any, dict[str, Any]]:
+        """Attempt the exact approved plan against the unchanged projected state.
+
+        The authoritative broker canonicalizes caller input and passes a fresh
+        copy to an explicitly plan-aware handler. The durable claim and effect
+        phases have the same crash/replay semantics as ``execute``. This is
+        local host mediation, not a process identity/OS attestation boundary.
+        """
+        self._assert_not_handler()
+        grant_id, invocation_id, state_key = (
+            _identifier(grant_id), _identifier(invocation_id), _key(state_key))
+        encoded_plan = _plan_encoded(plan)
+        plan_hash = sha256(encoded_plan).hexdigest()
+        # Detached from caller-owned objects; the handler gets this copy only.
+        detached_plan = json.loads(encoded_plan.decode("utf-8"))
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if db.execute("SELECT 1 FROM attempts WHERE invocation_id=? AND principal=? "
+                              "AND target=? AND session=?", (
+                                  invocation_id, self._context.principal_id,
+                                  self._context.target_id, self._context.session_id)).fetchone():
+                    raise ReadAccessDenied("invocation replay denied")
+                approved = self._plan_handlers.get(state_key)
+                now = self._now()
+                if not self._granted(db, grant_id, state_key, now, plan_hash=plan_hash,
+                                     plan_effect=approved):
+                    raise ReadAccessDenied("current use grant denied")
+                # A plan approval is single-use. Claim it atomically with the
+                # durable attempt reservation under this same writer lock.
+                updated = db.execute("UPDATE plan_grants SET plan_consumed_invocation_id=? "
+                           "WHERE grant_id=? AND principal=? AND target=? AND session=? "
+                           "AND plan_consumed_invocation_id IS NULL", (
+                               invocation_id, grant_id, self._context.principal_id,
+                               self._context.target_id, self._context.session_id))
+                if updated.rowcount != 1:
+                    raise ReadAccessDenied("plan grant already consumed")
+                db.execute("INSERT INTO attempts(invocation_id,grant_id,principal,target,session,"
+                           "state_key,status,started,handler_artifact_sha256,source_git_oid,"
+                           "plan_sha256) VALUES(?,?,?,?,?,?,'claimed',?,?,?,?)", (
+                               invocation_id, grant_id, self._context.principal_id,
+                               self._context.target_id, self._context.session_id,
+                               state_key, now, approved.handler_artifact_sha256,
+                               approved.source_git_oid, plan_hash))
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                if not self._granted(db, grant_id, state_key, self._now(),
+                                     plan_hash=plan_hash, plan_effect=approved,
+                                     plan_invocation_id=invocation_id):
+                    self._record(db, invocation_id, status="denied", finished=self._now(),
+                                 failure_class="permission")
+                    db.commit()
+                    raise ReadAccessDenied("grant revoked or expired before effect")
+                try:
+                    projection = self._ledger.project(self._context.target_id,
+                                                      self._context.session_id)
+                except Exception as exc:
+                    raise ReadAccessDenied("host ledger projection unavailable") from exc
+                if type(projection) is not dict or state_key not in projection:
+                    raise ReadAccessDenied("effect state unavailable")
+                encoded_state = _plan_encoded(projection[state_key])
+                state_hash = sha256(encoded_state).hexdigest()
+                state = json.loads(encoded_state.decode("utf-8"))
+                saved = db.execute("SELECT planned_state_sha256 FROM plan_grants WHERE "
+                                   "grant_id=? AND principal=? AND target=? AND session=?", (
+                                       grant_id, self._context.principal_id,
+                                       self._context.target_id, self._context.session_id)).fetchone()
+                if saved is None or state_hash != saved["planned_state_sha256"]:
+                    self._record(db, invocation_id, status="denied", finished=self._now(),
+                                 state_hash=state_hash, failure_class="infrastructure")
+                    db.commit()
+                    raise ReadAccessDenied("approved plan state changed before effect")
+                if not self._granted(db, grant_id, state_key, self._now(),
+                                     plan_hash=plan_hash, plan_effect=approved,
+                                     plan_invocation_id=invocation_id):
+                    self._record(db, invocation_id, status="denied", finished=self._now(),
+                                 state_hash=state_hash, failure_class="permission")
+                    db.commit()
+                    raise ReadAccessDenied("grant revoked or expired before effect")
+                self._in_handler.active = True
+                try:
+                    result = approved.handler(state, detached_plan)
+                    result_hash = _hash(result)
+                    receipt = self._record(db, invocation_id, status="ok",
+                                           finished=self._now(), state_hash=state_hash,
+                                           result_hash=result_hash)
+                    db.commit()
+                    return result, receipt
+                except Exception as exc:
+                    self._record(db, invocation_id, status="raised",
+                                 finished=self._now(), state_hash=state_hash,
+                                 failure_class="handler")
+                    db.commit()
+                    raise EffectAttemptFailed("effect attempt failed; invocation consumed") from exc
+                finally:
+                    self._in_handler.active = False
+            except (ReadAccessDenied, sqlite3.Error):
+                if db.in_transaction:
+                    self._record(db, invocation_id, status="denied", finished=self._now(),
+                                 failure_class="infrastructure")
+                    db.commit()
+                raise
+
     def attempt(self, invocation_id: str) -> dict[str, Any] | None:
         """Read durable outcome/class; ``claimed`` means crash ambiguity.
 
@@ -387,7 +677,7 @@ class HostOwnedEffectBroker:
         invocation_id = _identifier(invocation_id)
         with self._connect() as db:
             row = db.execute("SELECT status,failure_class,receipt_sha256,grant_id,"
-                             "state_sha256,result_sha256 "
+                             "state_sha256,result_sha256,plan_sha256 "
                              "FROM attempts WHERE invocation_id=? AND principal=? AND target=? "
                              "AND session=?", (
                                  invocation_id, self._context.principal_id,

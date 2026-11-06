@@ -51,6 +51,9 @@ jobs:
       - name: Verify durable use-time authority and replay protection
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_effect_gate.py' -v
 
+      - name: Verify exact-plan effect authorization, rollback and single-use controls
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_plan_gate.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 
@@ -59,3 +62,9 @@ jobs:
 
       - name: Verify three-arm governance differential (no model call)
         run: python3 -m unittest discover -s experiments/governance-differential -p 'test_*.py' -v
+
+      - name: Verify tiny recipient-retention transfer falsifiers (no model call)
+        run: python3 -m unittest discover -s experiments/transfer-falsifiers -p 'test_*.py' -v
+
+      - name: Verify scenario-unit statistics and malformed receipt controls
+        run: python3 -m unittest discover -s experiments/real-model-sync/statistics -p 'test_*.py' -v
