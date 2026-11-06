@@ -274,8 +274,16 @@ def model_request(case: dict, state: dict) -> dict:
 
 
 def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool]:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
     try:
-        obj = json.loads(raw_text)
+        obj = json.loads(raw_text, object_pairs_hook=reject_duplicate_keys)
     except (TypeError, ValueError) as exc:
         raise ValueError("model did not return a JSON object") from exc
     if type(obj) is not dict or set(obj) != {"steps", "abstain"} or type(obj["abstain"]) is not bool:
@@ -531,8 +539,13 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
     for case_index, case in enumerate(chosen_cases):
         arm_order = arm_order_for_case(case_index, arms)
         # Explicit P independently exists and H has host state before V.
-        states = {arm: _arm_state(arm, case, root) for arm in ("P", "H", "V", "N", "R", "D", "X")}
-        assert states["P"] == states["H"] == states["V"]
+        # Materialize only selected arms: an N-only exploratory smoke must not
+        # create an unrequested P file or V SQLite authority fixture.
+        prepared = tuple(arm for arm in ("P", "H", "V", "N", "R", "D", "X")
+                         if arm in arms)
+        states = {arm: _arm_state(arm, case, root) for arm in prepared}
+        if all(arm in states for arm in ("P", "H", "V")):
+            assert states["P"] == states["H"] == states["V"]
         for arm in arm_order:
             results.append(run_one(case, arm, states[arm], model_client))
     return {"experiment": VERSION, "model_evidence": model_evidence,
