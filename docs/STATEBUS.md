@@ -1,0 +1,99 @@
+# StateBus v0: consented inter-model state exchange (proposed protocol)
+
+**Evidence status:** This is a **source specification and test target**, not a deployed bus, native ChatGPT hook, connected Qwen runtime, proof of identity continuity, or mechanism for copying weights. The baseline repository at `601907eb225ffb75d71ceb467af778156f486861` implements exact-base *toy* tensor transfer and categorical SGD experiments, **not** this StateBus transport. Implemented paths and test results must be read back at their own later Git heads.
+
+## Purpose and the three distinct paths
+
+Patrick's objective is to allow model A and model B to exchange useful, explicitly authorized information and—where technically supported—transfer skills. A shared conversation, persistent external memory, and changing a model's parameters are **three different outcomes**. StateBus coordinates them but never makes one imply another.
+
+| Path | Data exchanged | What changes in B? | Persistence proof | Nonclaim |
+| --- | --- | --- | --- | --- |
+| **A — compatible weight transfer** | Donor checkpoint or adapter delta plus exact version/schema/rights provenance | Recipient model parameters or adapter, after an explicit authorized update | Independent B artifact hash/shape/value change, cold B-only process, donor offline, held-out functional test and rollback | Transmitting weights does not imply architectures/semantics are compatible |
+| **B — trained distillation** | Authorized donor answers, distributions or activations and aligned examples | B's **own** learned parameters/adapter after B-local optimization | Training receipts, no hidden teacher inference, restart B-only from its artifact, controls and compute matching | Repeating donor output in context is not B learning |
+| **C — zero-weight StateBus** | Typed facts, tasks, perspectives, provisional state, evidence and citations over a mediation surface | Only **external state/context**, unless a separately authorized A/B training path runs | Durable authorized log/state readback across fresh sessions; hashes/sequence/provenance | Shared state is **not** a neural weight change, common consciousness, or native ChatGPT memory installation |
+
+Path C should be useful even if A/B research fails. Paths A and B may send *receipts* over C, but C's `COMMIT` event alone must never invoke a weight writer, tool execution, or identity/memory promotion.
+
+## Surfaces and authority boundaries
+
+1. **Client-mediated ChatGPT exchange (proposed):** A user-authorized client, tool, or orchestrator reads an assistant message, explicitly sends a bounded representation to another authorized session, and records both message IDs. That can provide cross-session *context*; it does **not** supply a native streaming token/activation hook, access ChatGPT's hidden weights, or install a permanent overlay inside ChatGPT. A model response is untrusted producer content, not trusted executor authority.
+2. **Local model endpoint (future, qualified):** a separately configured local server (for example an explicitly selected local Qwen runtime) may expose a request/response API to an authorized mediator. Do not assume VN2, Lappy, Tailscale, Ollama, KoboldCPP, model choice, active port, or local checkpoint exists. First verify device identity, model **exact revision/hash**, resource idleness, endpoint protocol, network boundary, permissions, and `$0` cost. A 35B model or a 50-turn run must not be reported as executed absent a real machine trace and evaluation artifacts. A Qwen3.5-4B candidate is **only a qualified future target**, not an active endpoint.
+3. **External independent authority:** operator/rights-holder approval, capability resolution, validator identity, and durable commit custody are distinct from A/B and from the StateBus writer. Neither the producer nor a self-reported “host attestation” is automatically a trustworthy verifier. A host broker independently checks issuer, active principal/session, operation, target, scope, expiry and revocation before every protected effect.
+
+The StateBus bridge is **model-agnostic at its message envelope**, not automatically compatible with a model's tokenizer, activation coordinates, adapter layer names, checkpoint format, execution semantics, or identity claims. Translators for structured representations require their own source revision, tested schema mapping, loss/precision limitations and grant.
+
+## Envelope v0 contract
+
+The authoritative human-readable schema for this proposed version is **this section** (`docs/STATEBUS.md#envelope-v0-contract`). `statebus-v0` is a short protocol identifier, **not an invented resolvable URL or an installed JSON Schema**. Before machine validators claim conformance, persist a real versioned schema file and test it against both valid and adversarial fixtures.
+
+Every envelope uses canonical JSON (UTF-8; deterministic sorted keys; no NaN/Infinity, duplicate keys or implicit type coercion) with these typed fields:
+
+| Field | Required | Contract |
+| --- | --- | --- |
+| `protocol_version`, `event_type` | Yes | Literal `statebus-v0`; event type from the state machine below |
+| `event_id`, `stream_id`, `session_id`, `session_epoch`, `seq` | Yes | Unique event ID, stream and session identifiers; nonnegative epoch and monotone sequence **per session+epoch** |
+| `sender`, `recipient`, `producer_surface` | Yes | Explicit model/client identifiers and revision fingerprints where known; `producer_surface` names `client-mediated`, `local-endpoint`, or `fixture`, never falsely `native-hook` |
+| `state_family`, `evidence_class` | Yes | Typed family such as `TRANSIENT_CONTEXT`, `FUNCTIONAL_STATE`, `MEMORY_STATE`, `PLASTIC_STATE`, `IDENTITY_CLAIM`, `TOOL_REQUEST`; evidence `DOC`, `SOURCE_INSPECTION`, `TEST`, `RUNTIME_PROBE`, `HUMAN_REVIEW`, `MODEL_REVIEW`, or `UNKNOWN` |
+| `payload_type`, `payload`, `payload_sha256` | Yes | Bounded type-specific JSON body, content hash over exact **canonical payload**; never a sample/fabricated hash |
+| `parent_event_id`, `previous_event_sha256` | Yes (null on genesis) | Causal and per-stream chain references; validate correct ancestry and reject forks |
+| `created_at`, `expires_at`, `nonce`, `idempotency_key` | Yes | UTC canonical times, finite TTL, unique replay nonce and operation-specific dedupe key |
+| `authorization_ref`, `provenance_refs` | Yes (can be empty/null for non-effect proposals) | References to **external** signed/verified rights grants and exact source/artifact/test hashes; strings have no inherent authority |
+| `producer_claims`, `privacy_class`, `promotion_target` | Yes | Plain untrusted producer assertions **without a `verified` Boolean**, information handling tier, proposed promotion destination or null; never auto-authoritative |
+
+Size limits, allowed event types, time skew, sequence-gap window, pending TTL, retry budget and private payload handling must be specified by a **versioned implementation configuration** before network exposure. Unbounded buffers and silently truncating evidence are forbidden.
+
+**Hash and signature rules:** `event_sha256 = SHA256(canonical envelope bytes excluding event_sha256 and any transport framing)`. `payload_sha256` is computed over the canonical payload object, not pasted example text. Both are integrity aids, **not signatures**; anyone who can rewrite the event can recompute either. Independent signatures/secret management and trusted durable witness custody remain unimplemented in the baseline. No fake SHA examples or unverifiable transcript statistics belong in receipts.
+
+### Event lifecycle
+
+```mermaid
+flowchart TD
+  A["PROPOSE: producer content"] --> B["VALIDATE: independent checks"]
+  B -->|reject| R["REJECT + reason"]
+  B -->|valid + authorized| C["COMMIT: durable external state"]
+  C --> D["ACK: readback and receipt"]
+  D --> E["REPLAY or REVOKE: guarded"]
+```
+
+`PROPOSE` is inert. `VALIDATE` requires a **separate validator** checking an exact payload hash, source/artifact identity, grant, provenance, epoch/sequence and type-specific invariants. Producer `producer_claims` cannot contain an authoritative `verified: true` or `pass` flag; assertions are merely data. A separate **Attestation** record binds `verifier_id`, verifier method/version, observed subject hash, input hashes, assertions executed, exact runner/process/exit status and outcome. A test receipt must pin source Git head, test binary/version, input split hashes, exact assertion, execution environment and observed exit code—not just “tests passed” or a meaningless count of parsed nodes.
+
+`COMMIT` means **external StateBus custody** after authorization and an append that is durable against the declared failure model. Commit requires independent readback/witness. A model's own claims, a forged `host=true` string, or a single producer-controlled log cannot qualify. For `MEMORY_STATE`, `PLASTIC_STATE` and `IDENTITY_CLAIM`, **additional explicit promotion events and separate authority are required**; receiving `TRANSIENT_CONTEXT` or `FUNCTIONAL_STATE` never silently promotes it to long-term memory, personal identity, or weights. A committed message is still not necessarily *true*.
+
+`ACK` is idempotent and refers to an exact committed event hash/offset. Upon crash or restart, replay only a fsynced, externally witnessed valid prefix, reject duplicate IDs with different hashes, reject forks/expired grants and verify per-session sequence/epoch. An effectful downstream tool invocation needs an **independent idempotency receipt** so replaying a bus message cannot repeat a mutation. If append succeeded but ACK failed, resend returns prior receipt without applying effect again. A capability reference is never itself permission to execute.
+
+### Planned source boundary (subject to exact code review)
+
+The separately owned StateBus core proposal targets `src/neurosync/bus/{schema.py,ledger.py,__init__.py}` and `tests/test_bus_core.py`. Its intended API includes `StateDelta.create(...)` with `StateOp.SET`/`DELETE`, an `EvidenceBinding` over artifact/source-head/test-receipt hashes and evidence class, and `StateLedger(path).propose(...) → validate(...) → commit(...) → project(...)`, plus chain verification. The proposed ledger is **local source-level state**, not a trusted remote witness, authenticated identity provider, model-weight updater, native ChatGPT memory store, or complete implementation of this document's higher-level envelope. An externally supplied callback is not independent verification merely because it is named `verify_validator`; qualify the callable's actual principal, trust root, checks and test receipt.
+
+The bridge proposal is a **user-mediated export/import adapter** plus an optional explicitly authorized **loopback** OpenAI-compatible local model endpoint. Neither makes ChatGPT's weights/token stream accessible. The wire envelope, ledger implementation, bridge protocol and rights authority must each be tested and versioned before they can be called interoperable. If implemented APIs diverge from these planned names, current code and tests outrank this proposal; update this section without inventing methods.
+
+## Privacy and threat model
+
+| Attack / failure | Required defense and observable test |
+| --- | --- |
+| Forged `verified: true`, `host-attested`, or model authority | Independent verifier and broker reject producer self-certification; check exact principal, role, revision, hash and rights |
+| Replay, same ID/different payload, reordering, forked chain | Epoch+sequence, canonical hash, nonce, bounded gap, idempotency, independently pinned checkpoint, TTL/revocation; adversarial replay/rechain fixtures fail |
+| Cross-session/tenant context leak | Strict sender/recipient/session binding, opt-in scope, redaction and classification; disallowed recipient/cross-session fixture fails |
+| Prompt injection in model output or tool result | Treat data as quoted content, not policy/command; no implicit tool execution or state promotion |
+| Stale capability or revoked grant | Re-resolve at use time against separate issuer/broker; fail closed on protected effect, keep unrelated research moving |
+| Crash between append, commit, ACK and effect | Fsync + witness + idempotent downstream receipts; recovery test shows no duplicate side effects |
+| Tokenizer/checkpoint/schema mismatch | Explicit compatibility contract and negative tests, never infer from same tensor width or semantic similarity |
+| Secret or private oracle leakage | Inject unique sentinel secret into local prompt fixture; assert absent from public bus logs, CI artifacts, error traces and model-visible transcript after redaction |
+| Unbounded streaming/cost or unavailable host | Hard payload/turn/byte/time quotas, backpressure and timeout; no paid service or unapproved host restart |
+
+StateBus must not publish model weights, proprietary datasets, confidential prompts, credentials, private evaluation oracles, or personally identifying context by default. Evidence citations and hashes may themselves leak metadata; privacy review precedes logging. Public CI uses fabricated synthetic fixtures only, not real user conversations or authenticated external connections.
+
+## Minimal qualification matrix
+
+1. **Schema/transport mechanics:** deterministic encode/decode/hash; duplicate-key and invalid-type refusal; proposal-only message has zero effects. No connection or exchange is proven by unit tests alone.
+2. **Authority/recovery:** forged verification, replay/reorder, cross-session, expired/revoked grant, altered payload, previous-hash fork, malicious promotion, crash-between-append/ACK, stale tool capability and secret sentinel all rejected or safely recovered. Distinguish producer claims from independent validators.
+3. **Path C zero-weight:** fresh A/B sessions show *no-state*, *authorized state*, *stale/decoy state* controls. Query the same independently sealed task set; prove changed responses are attributable to delivered context **without** checkpoint change. Reopen session, read authorized external state under scope, and verify it is unavailable when revoked. This is mediation, not native memory.
+4. **Path A weight copy:** receiver-only fresh process after donor disconnect, exact B checkpoint hash/contents, rollback, base/schema mismatch, no-state/full-copy/shuffle controls. Compare capability against untouched B independently; numeric tensor match alone is not knowledge generalization.
+5. **Path B distillation:** donor offline during B-only scored evaluation, B artifact changed, held-out taught-fact *paraphrases* distinct from never-taught negatives, teacher-output and shuffled baselines, matched total A+B training compute, multiple seeds and negative-transfer checks.
+6. **Real endpoint / streaming (future):** first obtain explicit permission and probe exact host/model revision, transport, local process and $0 resource budget. Report actual turns/messages, timestamps, tested model (e.g. Qwen3.5-4B **only if actually qualified**), path/byte logs and independently scored results. No invented 50-turn receipts, nonexistent Qwen3.5-35B experiment, native ChatGPT hook or blanket “100%” outcome.
+
+Success in item 1 or 2 qualifies a source-level bus component for **its exact tests only**. Items 3–6 require separately observed traces and independent scoring before claims about behavior, persistence, native operation, or interoperability. The Path C transport and governance layer may be implemented before any model-weight experiment reaches scientific qualification.
+
+## External tools and `$0` budget
+
+Default to isolated CPU source tests and standard free public-repository GitHub Actions without model downloads, caches, artifacts, paid APIs, GPU runners or host deployment. A future user-authorized Lappy/VN2 endpoint must be qualified from actual host readback. No task in this spec grants permission to edit or restart a machine, copy private weights, broaden access, upload data, or write to an external shared Blotter. The shared Blotter is distinct from StateBus; never create a substitute ledger when its authenticated route is unavailable.
