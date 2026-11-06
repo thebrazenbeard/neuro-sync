@@ -4,6 +4,7 @@ Run from the repository root with Python 3.10+ and **no extra dependencies**:
 
 ```sh
 python experiments/zero-weight-sync/run.py demo
+python experiments/zero-weight-sync/causal_trial.py demo --seed 317
 python -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 ```
 
@@ -24,7 +25,8 @@ subprocesses yield different displays for A and B, not identical behaviors.
 
 Controls include no state, rejected decoy A proposal, absent/forged A,
 stale/expired projected state,
-revoke-after-validate (commit denied), session/target isolation, idempotent
+revoke-after-validate (commit denied), post-commit use-grant revocation,
+per-session grant isolation, replay after revocation remaining denied, session/target isolation, idempotent
 replay, a post-commit in-process handler-rebinding negative, eight post-commit
 inputs, forged `verified: true` model claims, and
 malformed/oversized task rejection, receiver clock-backdating rejection, and
@@ -37,6 +39,54 @@ they are **not** signed custody or authenticated external
 authority. Host callbacks and tools run in the same local Python trust domain.
 
 ## Claim ceiling and honest comparisons
+
+### Wave 2 — randomized causal and ordinary-file counterfactual
+
+`causal_trial.py` is an **additional scripted mock** experiment, not a replacement
+for the original `run.py` pilot or a live language-model test. It generates 13
+randomly named affine tool handlers and an independently selected hidden target
+for each seed. Scripted A alone sees a task-independent three-point probe
+signature, actually evaluates candidates, and discovers the matching opaque
+reference. The synthetic host oracle checks A's observation against the hidden
+target before it can be committed to a scoped SQLite StateBus event. **Neither
+the target coefficients nor probe answers nor held-out tasks are placed in the
+StateBus payload.** After A disconnects, a fresh receiver-only Python process
+uses frozen B artifact, available tool registry, and approved state to produce
+outputs for independently drawn, unobserved integer tasks. B does not train.
+
+Critically, an identically scoped ordinary JSON-file reference works too;
+an operator who already knows the reference can supply it without A. Both are
+intentional counterfactuals, not test failures. Expected example (`seed=317`):
+
+| Condition | Held-out correct / 8 | What it establishes |
+| --- | ---: | --- |
+| B, no state | 0/8 | This *scripted* receiver cannot select a tool without a reference |
+| B, valid StateBus ref | 8/8 | Authenticated-to-fixture A discovery plus external ref enables host tool use |
+| B, same ref in ordinary authorized JSON | 8/8 | StateBus is **not** needed for functional inference in this fixture |
+| B, post-commit revoked use-time grant | 0/8 | New **local host-owned broker sidecar** enforces current permission at use |
+
+These counts are **source-fixture expectations**, not claims for real models;
+run the exact committed Git revision and record actual stdout and CI receipts.
+Additional negative tests cover absent/forged A, wrong discovery/ref/corpus,
+expired state, session isolation, malformed tasks/registry, stale local grants,
+spoofed outputs and an operator-direct no-A baseline. Source and mock artifact
+SHA256 identities are checked; **there is no independent cryptographic witness**.
+
+The original `run.py` fixture also now checks a separate, scoped, operator-owned
+`.use-grant-*.json` file **on every tool invocation**. Revoking/deleting it
+denies a committed capability, and replaying the already-committed proposal
+cannot reactivate the grant. The additional causal receiver checks a similarly
+separate operator-owned `broker.json` at every attempted invocation; deleting
+or revoking it denies both StateBus and ordinary-file reference use. Because
+the brokers and SQLite files reside in one local trust domain, these are
+**control-flow regressions**, not real principal authentication, protected
+storage, durable witness custody or production ACL. A SQLite commit and a
+separate broker grant can fail independently; use fails closed if the latter
+was not durably recorded.
+Plain-file security could be strengthened with the same broker; do not count
+its absence as a StateBus-specific superiority claim. Actual model-to-model
+advantage remains **UNKNOWN** until differently implemented inference engines
+are tested under matched runtime, task, authority and cost conditions.
 
 - **Supports:** scripted A-observation-gated *external capability discovery*, local
   SQLite persistence, receiver-only process restart, task-blind reference
