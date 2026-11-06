@@ -60,6 +60,9 @@ jobs:
       - name: Verify bounded real-receiver pilot fixtures (no model call)
         run: python3 -m unittest discover -s experiments/real-model-sync -p 'test_*.py' -v
 
+      - name: Verify reversible compact receiver catalog (offline, no model call)
+        run: PYTHONPATH=src python3 -m unittest discover -s experiments/real-model-sync/compact_catalog -p 'test_*.py' -v
+
       - name: Verify three-arm governance differential (no model call)
         run: python3 -m unittest discover -s experiments/governance-differential -p 'test_*.py' -v
 
