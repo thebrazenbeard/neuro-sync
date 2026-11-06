@@ -116,8 +116,10 @@ class HostBoundReadGateTests(unittest.TestCase):
     def test_use_requires_separate_current_use_grant(self):
         rights = {"read": True, "use": False}
         effects = []
+        checks = []
         def authorize(check):
-            return rights["use"] if check.operation == "use" else rights["read"]
+            checks.append(check.operation)
+            return rights["use"] if check.operation in {"use-pre", "use"} else rights["read"]
         def host_handler(value):
             effects.append(value)
             return value["v"][0]
@@ -125,9 +127,11 @@ class HostBoundReadGateTests(unittest.TestCase):
         with self.assertRaises(ReadAccessDenied):
             gate.use("capabilities.alpha")
         self.assertEqual(effects, [])
+        self.assertEqual(checks, ["use-pre"])
         rights["use"] = True
         self.assertEqual(gate.use("capabilities.alpha"), 1)
         self.assertEqual(effects, [{"v": [1]}])
+        self.assertEqual(checks[-4:], ["use-pre", "read-pre", "read-post", "use"])
 
     def test_revoked_after_read_before_use_blocks_effect(self):
         rights = {"allowed": True}
