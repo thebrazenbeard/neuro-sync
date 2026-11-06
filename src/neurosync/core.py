@@ -266,7 +266,9 @@ def build_delta_bundle(
     targets: list[tuple[str, Tensor]] = []
     for name in before:
         old, new = before[name], after[name]
-        if old.values != new.values:
+        # Numeric equality hides signed-zero differences, but our canonical
+        # tensor fingerprint (and λ=1 exact-target contract) does not.
+        if old.sha256() != new.sha256():
             changes.append((name, Tensor(old.shape, tuple(b - a for a, b in zip(old.values, new.values)))))
             targets.append((name, Tensor(new.shape, tuple(new.values))))
     if not changes:
