@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import threading
 import time
@@ -62,6 +63,8 @@ class HostOwnedEffectBrokerTests(unittest.TestCase):
         self.assertEqual(receipt["handler_artifact_sha256"], "a" * 64)
         self.assertEqual(receipt["source_git_oid"], "sha1:" + "b" * 40)
         self.assertEqual(receipt["artifact_binding_kind"], "host_asserted_unverified")
+        self.assertNotIn("failure_class", receipt)  # successful v1 receipt stays byte-compatible
+        self.assertIsNone(broker.attempt("invoke1")["failure_class"])
         expected_hash = hashlib.sha256(json.dumps(
             self.effects[0], ensure_ascii=False, allow_nan=False,
             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -148,6 +151,7 @@ class HostOwnedEffectBrokerTests(unittest.TestCase):
             broker.execute("grant1", "uncertain", "capabilities.synthetic")
         self.assertEqual(len(self.effects), 1)
         self.assertEqual(broker.attempt("uncertain")["status"], "raised")
+        self.assertEqual(broker.attempt("uncertain")["failure_class"], "handler")
         with self.assertRaisesRegex(ReadAccessDenied, "replay denied"):
             self.broker(does_effect_then_crashes).execute(
                 "grant1", "uncertain", "capabilities.synthetic")
@@ -314,6 +318,65 @@ class HostOwnedEffectBrokerTests(unittest.TestCase):
             broker.execute("grant1", "ledger-down", "capabilities.synthetic")
         self.assertEqual(broker.attempt("ledger-down")["status"], "denied")
         self.assertEqual(self.effects, [])
+
+    def test_failure_class_separates_permission_denial_from_infrastructure(self):
+        broker = self.broker()
+        broker.grant("short", "capabilities.synthetic", expires_at_epoch=150)
+
+        original_project = self.ledger.project
+        def expires_while_projecting(target, session):
+            state = original_project(target, session)
+            self.now = 150.0  # expired after durable claim, before handler
+            return state
+        self.ledger.project = expires_while_projecting
+        with self.assertRaisesRegex(ReadAccessDenied, "revoked or expired"):
+            broker.execute("short", "permission-denial", "capabilities.synthetic")
+        permission = broker.attempt("permission-denial")
+        self.assertEqual(permission["status"], "denied")
+        self.assertEqual(permission["failure_class"], "permission")
+
+        self.now = 100.0
+        broker.grant("outage", "capabilities.synthetic", expires_at_epoch=150)
+        def unavailable(_target, _session):
+            raise RuntimeError("ledger unavailable")
+        self.ledger.project = unavailable
+        with self.assertRaisesRegex(ReadAccessDenied, "ledger projection unavailable"):
+            broker.execute("outage", "infrastructure-denial", "capabilities.synthetic")
+        infrastructure = broker.attempt("infrastructure-denial")
+        self.assertEqual(infrastructure["status"], "denied")
+        self.assertEqual(infrastructure["failure_class"], "infrastructure")
+
+        # A metrics consumer MUST distinguish these despite their shared
+        # `status=denied`; an outage earns no permission-governance credit.
+        countable = lambda record: (record["status"] == "denied" and
+                                    record["failure_class"] == "permission")
+        self.assertTrue(countable(permission))
+        self.assertFalse(countable(infrastructure))
+        self.assertEqual(self.effects, [])
+        with self.assertRaisesRegex(ReadAccessDenied, "invocation replay denied"):
+            broker.execute("short", "permission-denial", "capabilities.synthetic")
+
+    def test_legacy_attempt_db_adds_failure_class_without_losing_history(self):
+        with sqlite3.connect(self.path) as db:
+            db.execute("CREATE TABLE attempts ("
+                       "invocation_id TEXT NOT NULL, grant_id TEXT NOT NULL, "
+                       "principal TEXT NOT NULL, target TEXT NOT NULL, session TEXT NOT NULL, "
+                       "state_key TEXT NOT NULL, status TEXT NOT NULL, "
+                       "started REAL NOT NULL, finished REAL, state_sha256 TEXT, "
+                       "result_sha256 TEXT, handler_artifact_sha256 TEXT NOT NULL, "
+                       "source_git_oid TEXT NOT NULL, receipt_sha256 TEXT, "
+                       "PRIMARY KEY (principal,target,session,invocation_id))")
+            db.execute("INSERT INTO attempts (invocation_id,grant_id,principal,target,session,"
+                       "state_key,status,started,handler_artifact_sha256,source_git_oid) "
+                       "VALUES (?,?,?,?,?,?,?,?,?,?)", (
+                           "legacy-claim", "legacy-grant", "host-operator", "local-qwen",
+                           "sess1", "capabilities.synthetic", "claimed", 100.0,
+                           "a" * 64, "sha1:" + "b" * 40))
+        opened = self.broker()
+        self.assertEqual(opened.attempt("legacy-claim")["status"], "claimed")
+        self.assertIsNone(opened.attempt("legacy-claim")["failure_class"])
+        with self.assertRaisesRegex(ReadAccessDenied, "invocation replay denied"):
+            opened.execute("legacy-grant", "legacy-claim", "capabilities.synthetic")
 
 
 if __name__ == "__main__":
