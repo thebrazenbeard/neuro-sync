@@ -18,6 +18,26 @@ supported BF16/F16/F32/F64 two-dimensional LoRA A/B matrices; pairwise dtype,
 rank and module target agreement; integer rank, alpha and ordinary LoRA
 configuration; and an explicit immutable-looking base revision string.
 
+## Bounded filesystem observation
+
+The revised inspector requires a **narrow, absolute POSIX directory** and
+`O_NOFOLLOW` directory-fd traversal through every ancestor. It opens both
+files as regular, single-link file descriptors (rejecting symlinks, hardlink
+aliases, FIFOs, devices, and directories) and enforces **1 MiB config** and
+**4 GiB adapter** size ceilings. Parsing and SHA-256 hashing operate on the
+*same held descriptors*. Before returning it verifies descriptor
+size/device/inode/mtime/ctime, reopens each fixed filename, and reopens the
+declared directory to reject observable pathname/allowed-root replacement.
+
+On Windows, unsupported POSIX handle primitives cause an explicit HOLD; this
+code does not claim equivalent Windows no-follow semantics. The checked
+pathnames are valid **only at inspection time**: a later change remains
+possible without separate host-owned custody, leases and signed receipts.
+
+Regression tests use real synthetic temporary files and cover a symlinked
+ancestor, a hardlinked config, a config swapped for an external symlink after
+the initial open, and relocation/replacement of the root during scanning.
+
 **It is intentionally restrictive.** This first version does not support
 `adapter_model.bin`/pickle, embedding adapters, DoRA, rank/alpha patterns,
 transposed `fan_in_fan_out`, other PEFT algorithms, mixed tensor dtypes,
