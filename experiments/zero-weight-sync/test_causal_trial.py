@@ -104,6 +104,12 @@ class CausalTrialTests(unittest.TestCase):
         with mock.patch.object(Path, "read_bytes", tampered_test):
             with self.assertRaisesRegex(ValueError, "causal source/policy differs"):
                 trial.checked_source_head(head)
+        targeted_adversary = trial.pilot.REPO / "experiments/zero-weight-sync/adversarial_receiver.py"
+        def tampered_adversary(path):
+            return b"forged adversarial baseline" if path == targeted_adversary else actual(path)
+        with mock.patch.object(Path, "read_bytes", tampered_adversary):
+            with self.assertRaisesRegex(ValueError, "causal source/policy differs"):
+                trial.checked_source_head(head)
 
     def test_causal_manifest_is_bound_to_committed_event_evidence(self):
         self.commit()
@@ -189,6 +195,30 @@ class CausalTrialTests(unittest.TestCase):
         direct = self.receive("file", fresh=True)
         self.assertTrue(direct["ok"])
         self.assertEqual(direct["value"], self.scenario.evaluate(self.scenario.target_ref, 1031))
+
+    def test_no_state_path_leak_counterfactual_succeeds_without_bus(self):
+        """The restricted 0/8 is code gating, not broker-information isolation.
+
+        The subprocess can read only the exact registry/broker paths the
+        normal fresh B subprocess receives in every experimental arm. It gets
+        neither the StateBus path nor the plain-state file nor donor outputs.
+        """
+        self.commit()
+        xs = self.scenario.heldout(8)
+        gated = [self.receive("none", x=x, fresh=True) for x in xs]
+        exposed = []
+        for x in xs:
+            proc = subprocess.run(
+                [sys.executable, str(HERE / "adversarial_receiver.py"),
+                 "--registry", str(self.registry), "--broker", str(self.broker)],
+                input=json.dumps({"x": x}), text=True,
+                capture_output=True, timeout=5, check=True)
+            exposed.append(json.loads(proc.stdout))
+        self.assertEqual(trial.host_score(self.scenario,
+                         self.scenario.target_ref, xs, gated), 0)
+        self.assertEqual(trial.host_score(self.scenario,
+                         self.scenario.target_ref, xs, exposed), len(xs))
+        self.assertEqual(self.b_sha, trial.pilot.canonical_file(self.b))
 
     def test_decoy_ref_and_spoofed_state_denied_at_use(self):
         valid = self.commit()

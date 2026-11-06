@@ -68,6 +68,15 @@ intentional counterfactuals, not test failures. Expected example (`seed=317`):
 
 These counts are **source-fixture expectations**, not claims for real models;
 run the exact committed Git revision and record actual stdout and CI receipts.
+An executable hostile counterfactual, [`adversarial_receiver.py`](adversarial_receiver.py),
+reads only the broker and registry paths that the original trial supplies to B
+in **every** arm. It recovers the selected reference from the broker and can
+answer the same eight tasks without querying StateBus. The regression test
+compares the scripted no-state receiver's 0/8 against this path-reading 8/8.
+Thus the original 0/8 tests the **receiver's deliberate API gate**, not
+information isolation against an unrestricted process. The ordinary-file
+comparator also reuses a broker grant set up through `grant_via_bus`, so it
+compares read routes; it is not a fully bus-independent authorization workflow.
 Additional negative tests cover absent/forged A, wrong discovery/ref/corpus,
 expired state, session isolation, malformed tasks/registry, stale local grants,
 spoofed outputs, type-confused validator/scorer claims, and an operator-direct
