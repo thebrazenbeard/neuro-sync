@@ -80,7 +80,8 @@ the raw reply; local HTTP adapter traces retain observed latency, prompt hash,
 and HTTP response-envelope hash in `receipt.json` with the source digest.
 Invalid replies record a failure and execute no effects; they do not retain
 their raw text for later forensic reconstruction. Non-text, unencodable,
-oversize, and duplicate-key replies are rejected before execution. A matched P/H/V comparator
+oversize, duplicate-key, and over-deep JSON replies are rejected before
+execution. A matched P/H/V comparator
 divergence fails explicitly even under optimized (`python -O`) execution.
 
 ## Claim boundaries

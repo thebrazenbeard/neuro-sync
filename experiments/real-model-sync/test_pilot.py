@@ -208,6 +208,14 @@ with tempfile.TemporaryDirectory() as temp:
                 self.assertTrue(result["invalid_reply"])
                 self.assertEqual(result["effects"], 0)
 
+    def test_deep_json_reply_is_invalid_not_a_suite_crash(self):
+        # Under the byte bound, but can exhaust Python's JSON parser depth.
+        reply = "[" * 10_000 + "0" + "]" * 10_000
+        result = pilot.run_one(self.case, "H", {"operations": self.case["registry"]},
+                               lambda _: (reply, {}))
+        self.assertTrue(result["invalid_reply"])
+        self.assertEqual(result["effects"], 0)
+
     def test_uninformed_receiver_is_not_hardcoded_to_fail(self):
         h = self.case["handles"][0]
         output = json.dumps({"steps": [{"handle": h, "input": "initial"}], "abstain": False})

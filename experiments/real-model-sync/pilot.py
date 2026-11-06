@@ -273,7 +273,7 @@ def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool
 
     try:
         obj = json.loads(raw_text, object_pairs_hook=reject_duplicate_keys)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("model did not return a JSON object") from exc
     if type(obj) is not dict or set(obj) != {"steps", "abstain"} or type(obj["abstain"]) is not bool:
         raise ValueError("invalid plan envelope")
