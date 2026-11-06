@@ -20,6 +20,7 @@ exact Git head for later changes.
 | `src/neurosync/core.py`, `src/neurosync/__init__.py` | **Merged in #3**, stdlib | Exact-base tensor-delta extraction, bounded transfer, typed receipt, rollback; no authenticated rights or real model adapters |
 | `tests/test_core_transfer.py` | **Merged in #3**, stdlib | Adversarial core mechanics, numeric-integrity checks, no real-model effect |
 | `tests/test_core_trek_integration.py` | **Merged in #7**, stdlib | Five cross-component tests: train A via Trek TinyLearner, map its parameters into exact-base core snapshot, transfer, subprocess-score B; still same taught symbolic queries |
+| `experiments/zero-weight-sync/{run.py,test_sync.py,README.md}` | **Merged #12**, stdlib scripted mock fixture | A-origin capability proposal, local validation callbacks, mock A/B state mediation, B-only subprocess and unchanged artifact checks; not real model autonomy |
 | `docs/STATEBUS.md` | **Proposed higher-level wire/trust protocol**, not installed | Path C source contract; JCS and independent witness not implemented |
 | `src/neurosync/bus/{schema.py,ledger.py,__init__.py}` + `tests/test_bus_core.py` | **Merged #9**, source/local SQLite mechanics; metadata integrity follow-up **#11** | Typed StateDelta, session-scoped revision/PROPOSE→VALIDATE→local COMMIT, not external verified authority |
 | `src/neurosync/bus/bridge.py` + `tests/test_bus_bridge.py` | **Merged #10**, source tests | User/tool-mediated JSON import/export and bounded opt-in loopback client; not installed ChatGPT MCP or Qwen connection |
@@ -167,7 +168,10 @@ From the repository root (no package install or network request):
 ```bash
 python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v
 python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
+python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 ```
+
+The [zero-weight pilot](../experiments/zero-weight-sync/README.md) additionally supports `python3 experiments/zero-weight-sync/run.py demo`: **scripted mock** A/B artifacts and host-owned local capability only, not real Qwen or an installed ChatGPT MCP tool. Its source tests include no-state, stale/decoy, revoked, forged-A and fresh B-process controls; the local host callbacks are not independently authenticated authorities.
 
 The Trek source's local commands are
 `python3 experiments/trek-transfer-v0/run.py --dataset trek` and
