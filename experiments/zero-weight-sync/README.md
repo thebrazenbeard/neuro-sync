@@ -62,7 +62,7 @@ intentional counterfactuals, not test failures. Expected example (`seed=317`):
 | Condition | Held-out correct / 8 | What it establishes |
 | --- | ---: | --- |
 | B, no state | 0/8 | This *scripted* receiver cannot select a tool without a reference |
-| B, valid StateBus ref | 8/8 | Authenticated-to-fixture A discovery plus external ref enables host tool use |
+| B, valid StateBus ref | 8/8 | Host-checked scripted A discovery plus external ref enables host tool use |
 | B, same ref in ordinary authorized JSON | 8/8 | StateBus is **not** needed for functional inference in this fixture |
 | B, post-commit revoked use-time grant | 0/8 | New **local host-owned broker sidecar** enforces current permission at use |
 
@@ -74,6 +74,8 @@ spoofed outputs, type-confused validator/scorer claims, and an operator-direct
 no-A baseline. A **scoped causal source manifest** binds the new evaluator and
 exact checked-in test-policy bytes together with the original StateBus core;
 both must match `git show HEAD:<path>` before any local A-observation commit.
+The event binds a **host-generated fixture receipt digest**; that receipt is
+not independently witnessed or held in separate immutable custody.
 Source and mock artifact SHA256 identities are checked; **there is no independent
 cryptographic witness or independently protected test policy**. The checked-in
 test can be replaced by anyone authorized to change the repository, so this is
