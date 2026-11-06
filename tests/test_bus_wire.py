@@ -72,6 +72,14 @@ class WireProfileTests(unittest.TestCase):
             self.assertRaises(WireError, canonical_bytes, {"v": value})
             self.assertRaises(WireError, decode_canonical, json.dumps({"v": value}).encode())
 
+    def test_oversize_integer_never_leaks_python_conversion_error(self):
+        for digits in (5000, 12000):
+            with self.subTest(digits=digits):
+                for prefix in (b"", b"-"):
+                    hostile = b'{"v":' + prefix + b"9" * digits + b"}"
+                    self.assertLess(len(hostile), 16384)
+                    self.assertRaises(WireError, decode_canonical, hostile)
+
     def test_reject_every_float_and_nonfinite_number(self):
         for number in (0.0, -0.0, 1.5, 1e20, float("nan"), float("inf")):
             with self.subTest(number=repr(number)):
@@ -108,6 +116,10 @@ class WireProfileTests(unittest.TestCase):
         for _ in range(9):
             nested = [nested]
         self.assertRaises(WireError, canonical_bytes, nested)
+        # Some Python builds hit parser recursion limits before validation;
+        # this must still be a typed refusal, not an uncaught RecursionError.
+        hostile = b"[" * 1500 + b"0" + b"]" * 1500
+        self.assertRaises(WireError, decode_canonical, hostile)
 
     def test_unknown_types_and_implicit_coercion(self):
         for value in ({"v": b"byte data"}, {"v": (1, 2)}, {"v": {1: "integer key"}}):
