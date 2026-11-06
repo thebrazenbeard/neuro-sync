@@ -284,6 +284,25 @@ class TransferTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             snapshot_from_json(encoded.replace('"version":1', '"version":99'))
 
+    def test_snapshot_import_rejects_ambiguous_json_and_boolean_version(self):
+        """A snapshot must have one unambiguous canonical field interpretation."""
+        encoded = snapshot_to_json(make_snapshot("receiver-B"))
+        # Python's default decoder silently keeps the later key, hiding the
+        # otherwise-invalid earlier version from reviewers and other parsers.
+        duplicate_version = encoded.replace('"version":1', '"version":99,"version":1')
+        with self.assertRaisesRegex(ValueError, "duplicate JSON object key"):
+            snapshot_from_json(duplicate_version)
+
+        duplicate_tensor_field = encoded.replace('"values_hex":[',
+                                                 '"values_hex":[],"values_hex":[')
+        with self.assertRaisesRegex(ValueError, "duplicate JSON object key"):
+            snapshot_from_json(duplicate_tensor_field)
+
+        # bool is a subclass of int in Python, but JSON true is not version 1.
+        boolean_version = encoded.replace('"version":1', '"version":true')
+        with self.assertRaisesRegex(ValueError, "unsupported snapshot version"):
+            snapshot_from_json(boolean_version)
+
     def test_no_changes_and_mismatched_donor_structure(self):
         with self.assertRaisesRegex(ValueError, "no weight changes"):
             build_delta_bundle(self.a_base, self.a_base, receiver_id="receiver-B", transfer_id="t-1")
