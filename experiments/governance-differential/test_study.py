@@ -21,6 +21,14 @@ class GovernanceDifferentialTests(unittest.TestCase):
         self.assertEqual(evidence["broker_controls"]["statebus"], evidence["broker_controls"]["governed_file"])
         self.assertEqual(evidence["broker_controls"]["statebus"]["handler_effect_count"], 1)
 
+    def test_scope_probe_uses_an_unconsumed_grant_and_owner_can_still_use_it(self):
+        """An exhausted grant would make foreign denial true even without scope rules."""
+        for arm in ("statebus", "file", "governed_file"):
+            from tempfile import TemporaryDirectory
+            with self.subTest(arm=arm), TemporaryDirectory() as temp:
+                result = study._broker_controls(Path(temp), arm)
+                self.assertTrue(result["owner_succeeded_after_foreign_probe"])
+
     def test_stateledger_blocks_unapproved_mutation_but_uncontrolled_file_does_not(self):
         evidence = study.run()["data_mutation_interventions"]["unapproved"]
         self.assertEqual(evidence["statebus"], {
