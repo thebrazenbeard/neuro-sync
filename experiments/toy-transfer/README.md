@@ -1,4 +1,4 @@
-# Neuro-Sync: bounded toy probes
+# Neuro-Sync: controlled toy probes
 
 This isolated scratch prototype explores two **different** mechanisms. It does
 not implement the `thebrazenbeard/neuro-sync` GitHub README, perform LLM
@@ -14,6 +14,8 @@ target-local adapter baseline, with no cross-source effect or alignment loss.
 There is a paired-source and deterministic shuffled-source negative control.
 No raw gradients are added to mismatched parameter shapes; no `.data` writes;
 no cross-model LoRA aliases; no impossible rectangular-isometry constraint.
+The **scalar gate** is bounded; the projector output magnitude, total residual,
+gradient norm, and training dynamics are **not** bounded by that gate alone.
 
 Run with **preexisting** CPU PyTorch (never installed by this task):
 
@@ -99,15 +101,13 @@ and there is no retained external donor, post-reset knowledge gain has no
 identified physical storage mechanism. If A's weights are copied, that is the
 **copy** control, not evidence of a novel coupling mechanism.
 
-Hold out Patrick's advanced canonical Trek question for a later real-language
-evaluation: **"In what way did Q mispronounce Captain Picard's middle name?"**
-Do not train on it or count the toy as having passed it. A defensible scoring
-rubric must recognize the premise trap: *Jean-Luc* is Picard's hyphenated given
-name, not an established middle name. In *TNG: Tapestry*, Q's delivery-person
-pronunciation is phonetically rendered "John Luck Pickard." The actual real
-model trial must be separately sourced, evaluated, and reported.
+Maintain any advanced, episode-specific misleading-premise QA oracle **only**
+outside this public repository and all training/retrieval artifacts. Commit at
+most a nonreversible item hash/ID after private oracle creation; keep its exact
+prompt, expected answer, source material, and scoring rubric sealed until
+evaluation. Do not claim the toy passed that private real-language holdout.
 
-**Status at creation:** PyTorch is absent in this execution environment;
-those tests are written but cannot be executed here. The pure-stdlib
-transplant tests are independently runnable. Nothing touched the user's
-GitHub repository, Lappy, VN2, or production model state.
+**Status at publication:** PyTorch is absent in the execution environment;
+those tests are written but could not be executed there. The pure-stdlib
+transplant tests ran. No Lappy, VN2, production model, or shared runtime was
+modified; repository publication is source-only.
