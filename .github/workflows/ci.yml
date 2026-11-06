@@ -33,3 +33,8 @@ jobs:
       - name: Verify exact-base core contract
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
 
+      - name: Verify StateBus core local-ledger mechanics
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_core.py' -v
+
+      - name: Verify client-mediated StateBus bridge
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_bridge.py' -v
