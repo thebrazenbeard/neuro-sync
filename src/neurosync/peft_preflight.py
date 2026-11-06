@@ -10,8 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
+import stat
 import struct
 
 
@@ -19,6 +21,7 @@ SCHEMA = "NEUROSYNC_PEFT_ARTIFACT_PREFLIGHT_V1"
 MAX_HEADER = 1_000_000
 MAX_CONFIG = 1_000_000
 MAX_TENSORS = 20_000
+MAX_ADAPTER_BYTES = 4 * (1 << 30)
 _FLOAT_DTYPES = {"F16": 2, "BF16": 2, "F32": 4, "F64": 8}
 _LORA_NAME = re.compile(r"(?P<module>[A-Za-z0-9_.]+)\.lora_(?P<side>[AB])(?:\.default)?\.weight")
 _IMMUTABLE_REVISION = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?")
@@ -49,26 +52,71 @@ def _strict_json(raw: bytes) -> dict:
     return obj
 
 
-def _local_file(directory: Path, name: str) -> Path:
-    path = directory / name
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"expected regular non-symlink file: {name}")
-    return path
+def _open_secure_root(root: Path) -> int:
+    """Anchor every absolute directory component without following symlinks."""
+    if (os.name != "posix" or not all(hasattr(os, flag) for flag in
+            ("O_NOFOLLOW", "O_DIRECTORY", "O_NONBLOCK")) or
+            os.open not in os.supports_dir_fd or not hasattr(os, "pread")):
+        raise ValueError("secure POSIX directory handles required; unsupported host HOLD")
+    if not root.is_absolute() or ".." in root.parts or len(root.parts) < 3:
+        raise ValueError("adapter directory must be a narrow absolute clean path")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    try:
+        for component in root.parts[1:]:
+            if component in ("", ".", ".."):
+                raise ValueError("invalid adapter directory component")
+            next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except (OSError, ValueError) as exc:
+        os.close(fd)
+        raise ValueError("adapter directory unavailable or linked") from exc
 
 
-def _hash_file(path: Path) -> str:
+def _open_secure_leaf(root_fd: int, name: str, limit: int) -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        fd = os.open(name, flags, dir_fd=root_fd)
+    except OSError as exc:
+        raise ValueError("PEFT file unavailable or linked") from exc
+    try:
+        st = os.fstat(fd)
+        if (not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or
+                not 0 < st.st_size <= limit):
+            raise ValueError("PEFT file must be exclusive regular bounded file")
+        return fd
+    except (OSError, ValueError):
+        os.close(fd)
+        raise
+
+
+def _read_fd_range(fd: int, start: int, size: int) -> bytes:
+    """Read only the bounded requested bytes from the held descriptor."""
+    result = bytearray()
+    while len(result) < size:
+        chunk = os.pread(fd, min(1 << 20, size - len(result)), start + len(result))
+        if not chunk:
+            raise ValueError("PEFT file truncated during inspection")
+        result.extend(chunk)
+    return bytes(result)
+
+
+def _hash_fd(fd: int, size: int) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
+    cursor = 0
+    while cursor < size:
+        chunk = os.pread(fd, min(1 << 20, size - cursor), cursor)
+        if not chunk:
+            raise ValueError("PEFT file truncated during SHA-256")
+        digest.update(chunk)
+        cursor += len(chunk)
     return digest.hexdigest()
 
 
-def _read_config(path: Path) -> dict:
-    size = path.stat().st_size
-    if not 0 < size <= MAX_CONFIG:
-        raise ValueError("adapter config size outside bounded range")
-    config = _strict_json(path.read_bytes())
+def _read_config(fd: int, size: int) -> dict:
+    config = _strict_json(_read_fd_range(fd, 0, size))
     if config.get("peft_type") != "LORA":
         raise ValueError("only ordinary LoRA PEFT type is supported")
     if not (type(config.get("base_model_name_or_path")) is str and
@@ -104,18 +152,14 @@ def _read_config(path: Path) -> dict:
     return config
 
 
-def _tensor_headers(path: Path) -> dict:
-    total = path.stat().st_size
+def _tensor_headers(fd: int, total: int) -> dict:
     if total < 11:
         raise ValueError("safetensors file too short")
-    with path.open("rb") as stream:
-        prefix = stream.read(8)
-        if len(prefix) != 8:
-            raise ValueError("missing safetensors length prefix")
-        length, = struct.unpack("<Q", prefix)
-        if not 2 <= length <= MAX_HEADER or 8 + length > total:
-            raise ValueError("invalid or oversized safetensors header")
-        raw = stream.read(length)
+    prefix = _read_fd_range(fd, 0, 8)
+    length, = struct.unpack("<Q", prefix)
+    if not 2 <= length <= MAX_HEADER or 8 + length > total:
+        raise ValueError("invalid or oversized safetensors header")
+    raw = _read_fd_range(fd, 8, length)
     if not raw.startswith(b"{"):
         raise ValueError("safetensors header must begin with '{'")
     header = _strict_json(raw)
@@ -170,15 +214,58 @@ def inspect_peft_lora_artifacts(directory: str | Path) -> dict:
     It does not mutate or load any model and never authorizes import/execution.
     """
     root = Path(directory)
-    if not root.is_dir() or root.is_symlink():
-        raise ValueError("adapter directory must be a real directory")
-    config_path = _local_file(root, "adapter_config.json")
-    weights_path = _local_file(root, "adapter_model.safetensors")
-    baseline = tuple((p.stat().st_dev, p.stat().st_ino,
-                      p.stat().st_size, p.stat().st_mtime_ns)
-                     for p in (config_path, weights_path))
-    config = _read_config(config_path)
-    tensors = _tensor_headers(weights_path)
+    root_fd = _open_secure_root(root)
+    config_fd = weights_fd = -1
+    try:
+        root_start = os.fstat(root_fd)
+        config_fd = _open_secure_leaf(root_fd, "adapter_config.json", MAX_CONFIG)
+        weights_fd = _open_secure_leaf(root_fd, "adapter_model.safetensors",
+                                       MAX_ADAPTER_BYTES)
+        config_start, weights_start = os.fstat(config_fd), os.fstat(weights_fd)
+        config = _read_config(config_fd, config_start.st_size)
+        tensors = _tensor_headers(weights_fd, weights_start.st_size)
+        # Verify from the same open file descriptions that supplied the parsed
+        # bytes; never reopen by pathname to obtain a different SHA-256 stream.
+        config_digest = _hash_fd(config_fd, config_start.st_size)
+        weights_digest = _hash_fd(weights_fd, weights_start.st_size)
+        identity = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        for old, current in ((config_start, os.fstat(config_fd)),
+                             (weights_start, os.fstat(weights_fd))):
+            if any(getattr(old, key) != getattr(current, key) for key in identity):
+                raise ValueError("PEFT file changed during inspection")
+
+        # Verify that each fixed pathname still names the inspected inode.
+        for name, limit, old in (("adapter_config.json", MAX_CONFIG, config_start),
+                                 ("adapter_model.safetensors", MAX_ADAPTER_BYTES,
+                                  weights_start)):
+            current_fd = _open_secure_leaf(root_fd, name, limit)
+            try:
+                current = os.fstat(current_fd)
+                if any(getattr(old, key) != getattr(current, key) for key in identity):
+                    raise ValueError("PEFT file pathname changed during inspection")
+            finally:
+                os.close(current_fd)
+
+        # The original directory itself may have been moved, while the held
+        # descriptor still reads old bytes; re-open the *declared* root.
+        current_root_fd = _open_secure_root(root)
+        try:
+            root_finish = os.fstat(root_fd)
+            current_root = os.fstat(current_root_fd)
+            root_identity = ("st_dev", "st_ino", "st_ctime_ns", "st_mtime_ns")
+            if (any(getattr(root_start, key) != getattr(root_finish, key)
+                    for key in root_identity) or
+                    any(getattr(root_finish, key) != getattr(current_root, key)
+                        for key in root_identity)):
+                raise ValueError("PEFT adapter directory changed during inspection")
+        finally:
+            os.close(current_root_fd)
+    finally:
+        if weights_fd >= 0:
+            os.close(weights_fd)
+        if config_fd >= 0:
+            os.close(config_fd)
+        os.close(root_fd)
     pairs = {}
     for name, (dtype, shape) in tensors.items():
         match = _LORA_NAME.fullmatch(name)
@@ -207,13 +294,6 @@ def inspect_peft_lora_artifacts(directory: str | Path) -> dict:
                        "dtype": a_dtype, "target": matching[0]})
     if matched_targets != set(config["target_modules"]):
         raise ValueError("configured LoRA target has no tensor pair")
-    config_digest = _hash_file(config_path)
-    weights_digest = _hash_file(weights_path)
-    after = tuple((p.stat().st_dev, p.stat().st_ino,
-                   p.stat().st_size, p.stat().st_mtime_ns)
-                  for p in (config_path, weights_path))
-    if baseline != after:
-        raise ValueError("PEFT file changed during inspection")
     return {
         "schema": SCHEMA, "candidate_only": True, "trainingday_ready": False,
         "evidence_class": "LOCAL_FILE_INSPECTION_SELF_REPORTED",
