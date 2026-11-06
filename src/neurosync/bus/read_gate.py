@@ -48,7 +48,7 @@ class HostBoundContext:
     def __post_init__(self) -> None:
         for label in ("principal_id", "target_id", "session_id"):
             value = getattr(self, label)
-            if not isinstance(value, str) or not _ID.fullmatch(value):
+            if type(value) is not str or not _ID.fullmatch(value):
                 raise ValueError(f"invalid host-bound {label}")
 
 
@@ -84,7 +84,7 @@ class HostBoundReadGate:
 
     @staticmethod
     def _state_key(key: str) -> str:
-        if not isinstance(key, str) or not _KEY.fullmatch(key):
+        if type(key) is not str or not _KEY.fullmatch(key):
             raise ReadAccessDenied("invalid state key")
         return key
 
