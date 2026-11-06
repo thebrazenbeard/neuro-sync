@@ -197,6 +197,50 @@ class TransferTests(unittest.TestCase):
                          ModelSnapshot("B", "float-cancellation", "schema-v1",
                                        donor_trained.tensors).fingerprint())
 
+    def test_signed_zero_change_is_not_silently_dropped(self):
+        a_before = ModelSnapshot(
+            "A", "signed-zero", "v1",
+            (("v", Tensor.from_nested([0.0])), ("w", Tensor.from_nested([0.0]))),
+        )
+        a_after = ModelSnapshot(
+            "A", "signed-zero", "v1",
+            (("v", Tensor.from_nested([-0.0])), ("w", Tensor.from_nested([1.0]))),
+        )
+        b = ModelSnapshot("B", "signed-zero", "v1", a_before.tensors)
+        bundle = build_delta_bundle(a_before, a_after, receiver_id="B", transfer_id="t-zero")
+        self.assertEqual({name for name, _ in bundle.deltas}, {"v", "w"})
+        shared = dict(
+            transfer_id="t-zero", base_fingerprint=b.fingerprint(),
+            manifest_sha256=bundle.manifest.sha256(),
+            allowed_tensors=("v", "w"), valid_from_epoch=1000, expires_epoch=2000,
+        )
+        export = ScopedGrant(actor_id="A", counterpart_id="B", operation="export-delta", **shared)
+        importer = ScopedGrant(actor_id="B", counterpart_id="A", operation="import-delta", **shared)
+        result, _ = apply_delta_bundle(b, bundle, export, importer, now_epoch=1500)
+        expected = ModelSnapshot("B", "signed-zero", "v1", a_after.tensors)
+        self.assertEqual(result.fingerprint(), expected.fingerprint())
+        self.assertEqual(result.tensor_map()["v"].values[0].hex(), "-0x0.0p+0")
+
+    def test_signed_zero_only_delta_is_not_considered_noop(self):
+        before = ModelSnapshot("A", "signed-zero-only", "v1",
+                               (("v", Tensor.from_nested([0.0])),))
+        after = ModelSnapshot("A", "signed-zero-only", "v1",
+                              (("v", Tensor.from_nested([-0.0])),))
+        bundle = build_delta_bundle(before, after, receiver_id="B", transfer_id="t-sign")
+        self.assertEqual(tuple(name for name, _ in bundle.deltas), ("v",))
+        self.assertNotEqual(before.fingerprint(), after.fingerprint())
+        base_b = ModelSnapshot("B", "signed-zero-only", "v1", before.tensors)
+        shared = dict(
+            transfer_id="t-sign", base_fingerprint=base_b.fingerprint(),
+            manifest_sha256=bundle.manifest.sha256(), allowed_tensors=("v",),
+            valid_from_epoch=1000, expires_epoch=2000,
+        )
+        export = ScopedGrant(actor_id="A", counterpart_id="B", operation="export-delta", **shared)
+        importer = ScopedGrant(actor_id="B", counterpart_id="A", operation="import-delta", **shared)
+        result, _ = apply_delta_bundle(base_b, bundle, export, importer, now_epoch=1500)
+        expected = ModelSnapshot("B", "signed-zero-only", "v1", after.tensors)
+        self.assertEqual(result.fingerprint(), expected.fingerprint())
+
     def test_rollback_rejects_receiver_drift_and_wrong_receipt(self):
         result, receipt = self.apply()
         drift = make_snapshot("receiver-B", head=[[0.5, 0.5], [0.75, 99.0]])
