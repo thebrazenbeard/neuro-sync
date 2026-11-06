@@ -5,9 +5,12 @@ model evaluations or independent model/host custody.
 """
 
 from collections import Counter
+import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -110,6 +113,93 @@ class IndependentIntegrityTests(unittest.TestCase):
             with self.subTest(arm=arm):
                 self.assertLessEqual(max(counts.get(i, 0) for i in range(7)) -
                                      min(counts.get(i, 0) for i in range(7)), 1)
+
+    def test_overdeep_local_http_envelope_is_a_bounded_invalid_reply(self):
+        client = pilot.LocalModelClient("http://127.0.0.1:11434", "ollama", "synthetic")
+        bad_envelope = ("[" * 10_000 + "0" + "]" * 10_000).encode("utf8")
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                return io.BytesIO(bad_envelope)
+
+        client.opener = FakeOpener()
+        case = self.suite["cases"][0]
+        result = pilot.run_one(case, "N", {}, client)
+        self.assertTrue(result["invalid_reply"])
+        self.assertEqual(result["effects"], 0)
+        self.assertEqual(result["transport_trace"]["outcome"], "transport_or_parse_failure")
+
+    def test_duplicate_http_envelope_keys_cannot_select_model_text(self):
+        client = pilot.LocalModelClient("http://127.0.0.1:11434", "ollama", "synthetic")
+        # Default json.loads silently chooses the last `message`, making a
+        # hash-bound HTTP envelope ambiguous to independent parsers.
+        contradictory = (b'{"message":{"content":"FIRST-IGNORED"},'
+                         b'"message":{"content":"{\\"steps\\":[],\\"abstain\\":true}"}}')
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                return io.BytesIO(contradictory)
+
+        client.opener = FakeOpener()
+        case = self.suite["cases"][0]
+        result = pilot.run_one(case, "N", {}, client)
+        self.assertTrue(result["invalid_reply"])
+        self.assertEqual(result["effects"], 0)
+
+    def test_matched_comparator_cannot_be_disabled_by_python_optimization(self):
+        script = """
+import importlib.util
+from pathlib import Path
+import sys
+import tempfile
+spec = importlib.util.spec_from_file_location('neuro_pilot_opt', sys.argv[1])
+pilot = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = pilot
+spec.loader.exec_module(pilot)
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    sealed = root / 'suite.json'
+    pilot.freeze_suite(sealed)
+    suite, _ = pilot.load_suite(sealed)
+    original = pilot._arm_state
+    def diverging(arm, case, output_dir):
+        state = original(arm, case, output_dir)
+        return {**state, 'altered_by_host': True} if arm == 'H' else state
+    pilot._arm_state = diverging
+    try:
+        pilot.run_suite(suite, lambda _: (_ for _ in ()).throw(RuntimeError('receiver called')),
+                        root / 'run', model_evidence={'real_endpoint': False}, max_cases=1)
+    except ValueError as exc:
+        if 'comparator' not in str(exc):
+            raise
+    else:
+        raise RuntimeError('divergent comparator silently accepted')
+"""
+        for args in ([], ["-O"]):
+            with self.subTest(optimized=bool(args)):
+                result = subprocess.run([sys.executable, *args, "-c", script,
+                                         str(Path(pilot.__file__))],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bounded_decision_receipt_and_adversarial_reply_rejection(self):
+        case = self.suite["cases"][0]
+        h = case["handles"][0]
+        valid = json.dumps({"steps": [{"handle": h, "input": "initial"}], "abstain": False})
+        result = pilot.run_one(case, "H", {"operations": case["registry"]},
+                               lambda _: (valid, {"provider": "synthetic"}))
+        self.assertFalse(result["invalid_reply"])
+        self.assertEqual(result["selected_handles"], [h])
+        self.assertEqual(result["model_text_sha256"], hashlib.sha256(valid.encode()).hexdigest())
+        self.assertNotIn(valid, json.dumps(result))
+        invalid = [valid.encode(), valid + "\ud800", "[" * 10_000 + "0" + "]" * 10_000,
+                   '{"steps":[],"abstain":false,"abstain":true}', "x" * 1_000_001]
+        for reply in invalid:
+            with self.subTest(reply_kind=type(reply).__name__, length=len(reply)):
+                rejected = pilot.run_one(case, "H", {"operations": case["registry"]},
+                                         lambda _: (reply, {}))
+                self.assertTrue(rejected["invalid_reply"])
+                self.assertEqual(rejected["effects"], 0)
 
 
 if __name__ == "__main__":

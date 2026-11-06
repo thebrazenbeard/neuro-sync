@@ -132,8 +132,15 @@ answer**. Host-fixture StateBus validation persists actual bounded tool-effect
 probe receipts and a canonical SHA-256 source-file manifest; its Git HEAD OID
 does not prove the working tree is clean or independently witnessed. Arm order
 is deterministically counterbalanced by scenario index;
-each model call has fresh isolated chat messages. Observed outputs/latency and
-prompt/response hashes are retained in `receipt.json` with exact source digest.
+each model call has fresh isolated chat messages. Valid decisions retain bounded
+selected handles and a SHA-256 digest of the exact model text, but not the raw
+reply. The local HTTP adapter records request parameters, observed latency,
+prompt hash, and HTTP response-envelope hash in `receipt.json` with the exact
+source digest. Invalid replies retain failure metadata and execute no effects;
+their original text is not reconstructible from a digest. Non-text,
+unencodable, oversize, duplicate-key, and over-deep JSON responses are rejected
+before effects. The P/H/V comparator equality requirement remains enforced
+under optimized (`python -O`) execution.
 
 ## Claim boundaries
 

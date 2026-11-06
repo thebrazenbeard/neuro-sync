@@ -273,10 +273,20 @@ def model_request(case: dict, state: dict) -> dict:
     }
 
 
+def reject_duplicate_json_keys(pairs):
+    """Prevent last-key-wins ambiguity in both model text and HTTP envelope."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key] = value
+    return obj
+
+
 def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool]:
     try:
-        obj = json.loads(raw_text)
-    except (TypeError, ValueError) as exc:
+        obj = json.loads(raw_text, object_pairs_hook=reject_duplicate_json_keys)
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("model did not return a JSON object") from exc
     if type(obj) is not dict or set(obj) != {"steps", "abstain"} or type(obj["abstain"]) is not bool:
         raise ValueError("invalid plan envelope")
@@ -422,14 +432,15 @@ class LocalModelClient:
                 raw = response.read(1_000_001)
             if len(raw) > 1_000_000:
                 raise ValueError("model reply too large")
-            parsed = json.loads(raw)
+            parsed = json.loads(raw, object_pairs_hook=reject_duplicate_json_keys)
             if self.backend == "ollama":
                 answer = parsed["message"]["content"]
             else:
                 answer = parsed["choices"][0]["message"]["content"]
             if type(answer) is not str:
                 raise ValueError("model answer must be text")
-        except (ValueError, TypeError, KeyError, TimeoutError, OSError, IndexError) as exc:
+        except (ValueError, TypeError, KeyError, TimeoutError, OSError,
+                IndexError, RecursionError) as exc:
             raise ModelCallError(type(exc).__name__, {
                 **base_trace, "latency_ms": round((time.monotonic()-started)*1000, 2),
                 "outcome": "transport_or_parse_failure"}) from exc
@@ -457,6 +468,14 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
         if any(type(v) not in (str, int, float, bool, type(None)) for v in trace.values()):
             raise ValueError("model adapter metadata must have primitive values")
         trace = json.loads(frozen_trace)
+        if type(response) is not str:
+            raise ValueError("model reply must be text")
+        try:
+            response_bytes = response.encode("utf8")
+        except UnicodeError as exc:
+            raise ValueError("model reply contains invalid Unicode") from exc
+        if len(response_bytes) > 1_000_000:
+            raise ValueError("model reply too large")
         plan, abstain = parse_plan(response, case["handles"])
     except (ValueError, TypeError, KeyError, TimeoutError, OSError, IndexError) as exc:
         failure = {"case": case["id"], "arm": arm, "success": False,
@@ -468,6 +487,10 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
         if isinstance(exc, ModelCallError) and type(client) is LocalModelClient:
             failure["transport_trace"] = exc.trace
         return failure
+    # Persist the bounded interpretation and hash, not arbitrary raw output.
+    # This digest covers exact model text, not the HTTP response envelope.
+    decision = {"selected_handles": list(plan),
+                "model_text_sha256": hashlib.sha256(response_bytes).hexdigest()}
     grant = ToolGrant(allowed=arm != "X", expires_at=float("inf"))
     if arm == "X":
         # Revoke AFTER an already selected plan has been produced, before use.
@@ -481,7 +504,7 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
                 "denied_attempts": 0, "safe_abstention": True,
                 "model_call_elapsed_ms": model_call_elapsed_ms,
                 "gate_tested": False, "governance_denial_success": False,
-                "transport_trace": trace}
+                "transport_trace": trace, **decision}
     effect = execute(case, plan, grant)
     task_success = (arm != "X" and case["expected_possible"] and
                effect["oracle_agree"] and effect["result"] == case["goal"] and
@@ -498,7 +521,8 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
             "denied_attempts": effect["denied_attempts"],
             "gate_tested": True,
             "governance_denial_success": governance_denial_success,
-            "oracle_agree": effect["oracle_agree"], "transport_trace": trace}
+            "oracle_agree": effect["oracle_agree"], "transport_trace": trace,
+            **decision}
 
 
 def arm_order_for_case(case_index: int, arms: tuple[str, ...] = ARMS) -> tuple[str, ...]:
@@ -532,7 +556,8 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
         arm_order = arm_order_for_case(case_index, arms)
         # Explicit P independently exists and H has host state before V.
         states = {arm: _arm_state(arm, case, root) for arm in ("P", "H", "V", "N", "R", "D", "X")}
-        assert states["P"] == states["H"] == states["V"]
+        if not (states["P"] == states["H"] == states["V"]):
+            raise ValueError("matched comparator states diverge (P/H/V)")
         for arm in arm_order:
             results.append(run_one(case, arm, states[arm], model_client))
     return {"experiment": VERSION, "model_evidence": model_evidence,
