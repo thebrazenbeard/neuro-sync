@@ -38,3 +38,10 @@ stale key-revision write. It raises on
 any unexpected outcome and prints a JSON receipt labeled
 `LOCAL_TEST_SOURCE_ONLY`; the process exit status does **not** attest any
 remote runtime or model behavior.
+
+The broker's foreign-principal isolation probe is performed **before** the
+rightful principal consumes its grant. The rightful principal must then use
+that same grant successfully. Testing foreign denial *after* consumption
+would confound scope enforcement with an unrelated single-use/replay denial.
+The observation remains a same-process synthetic test, not authenticated
+principal isolation across operating-system identities.
