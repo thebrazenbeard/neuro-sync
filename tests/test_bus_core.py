@@ -24,7 +24,8 @@ DENY_VALIDATOR = lambda delta, receipt: False
 def evidence():
     return EvidenceBinding(
         artifact_sha256="a" * 64,
-        source_head_sha256="b" * 64,
+        source_git_commit_oid="sha1:" + "d" * 40,
+        source_tree_sha256="b" * 64,
         host_test_receipt_sha256="c" * 64,
         evidence_class=EvidenceClass.TEST,
     )
@@ -114,6 +115,15 @@ class StateBusCoreTests(unittest.TestCase):
         self.assertRaises(SchemaError, delta, value="X" * 9000)
         self.assertRaises(SchemaError, delta, value=float("nan"))
         self.assertRaises(SchemaError, delta, expected_revision=-1)
+        with self.assertRaises(SchemaError):
+            EvidenceBinding(
+                artifact_sha256="a" * 64,
+                source_git_commit_oid="601907eb225ffb75d71ceb467af778156f486861",  # unqualified SHA1
+                source_tree_sha256="b" * 64,
+                host_test_receipt_sha256="c" * 64,
+                evidence_class=EvidenceClass.TEST,
+            )
+        self.assertEqual(evidence().source_git_commit_oid, "sha1:" + "d" * 40)
 
     def test_propose_validate_commit_readback_and_restart(self):
         item = delta()

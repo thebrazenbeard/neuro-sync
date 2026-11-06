@@ -25,6 +25,7 @@ MAX_DEPTH = 8
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,95}$")
 _KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_.\-]{0,127}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OID = re.compile(r"^(sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$")
 _DENIED_KEYS = ("secret", "credential", "password", "token", "private", "weight", "optimizer")
 
 
@@ -155,13 +156,24 @@ def _refs(value: tuple[str, ...] | list[str], label: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class EvidenceBinding:
+    """Declared provenance only; host must verify exact source tree bytes.
+
+    `source_git_commit_oid` is the recoverable Git revision identifier.
+    `source_tree_sha256` is a separate declared digest of a host-defined
+    canonical source-tree artifact; it is NOT the Git SHA-1 object ID.
+    Neither field verifies itself or carries signature/rights authority.
+    """
+
     artifact_sha256: str
-    source_head_sha256: str
+    source_git_commit_oid: str
+    source_tree_sha256: str
     host_test_receipt_sha256: str
     evidence_class: EvidenceClass
 
     def __post_init__(self) -> None:
-        for field in ("artifact_sha256", "source_head_sha256", "host_test_receipt_sha256"):
+        if not isinstance(self.source_git_commit_oid, str) or not _GIT_OID.fullmatch(self.source_git_commit_oid):
+            raise SchemaError("source_git_commit_oid must be algorithm-qualified Git OID")
+        for field in ("artifact_sha256", "source_tree_sha256", "host_test_receipt_sha256"):
             value = getattr(self, field)
             if not isinstance(value, str) or not _HEX64.fullmatch(value):
                 raise SchemaError(f"invalid {field}")
@@ -173,7 +185,8 @@ class EvidenceBinding:
     def as_dict(self) -> dict[str, str]:
         return {
             "artifact_sha256": self.artifact_sha256,
-            "source_head_sha256": self.source_head_sha256,
+            "source_git_commit_oid": self.source_git_commit_oid,
+            "source_tree_sha256": self.source_tree_sha256,
             "host_test_receipt_sha256": self.host_test_receipt_sha256,
             "evidence_class": self.evidence_class.value,
         }
@@ -286,7 +299,8 @@ class StateDelta:
             raise SchemaError("provenance/capability refs must be JSON arrays")
         evidence = data["evidence"]
         if not isinstance(evidence, dict) or set(evidence) != {
-            "artifact_sha256", "source_head_sha256", "host_test_receipt_sha256", "evidence_class",
+            "artifact_sha256", "source_git_commit_oid", "source_tree_sha256",
+            "host_test_receipt_sha256", "evidence_class",
         }:
             raise SchemaError("invalid evidence binding fields")
         obj = cls.create(
