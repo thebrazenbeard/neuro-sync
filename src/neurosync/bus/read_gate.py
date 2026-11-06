@@ -59,7 +59,7 @@ class AccessCheck:
     """A request to host policy, not a producer's authorization claim."""
 
     context: HostBoundContext
-    operation: str  # read-pre, read-post, use
+    operation: str  # read-pre, read-post, use-pre, use
     state_key: str
     value: Any = None
 
@@ -150,7 +150,7 @@ class HostBoundReadGate:
         effect custody, which this local facade does not implement.
         """
         key = self._state_key(state_key)
-        self._check("use", key)
+        self._check("use-pre", key)
         handler = self._handlers.get(key)
         if handler is None:
             raise ReadAccessDenied("no host-approved handler for state key")
