@@ -1,6 +1,6 @@
 # neuro-sync
 
-**Status: research proposal and bounded experiments — not a working distributed LLM-synchronization runtime.**
+**Status: research proposal with committed, bounded toy experiments — not a working distributed LLM-synchronization runtime.** The current `main` contains [`experiments/toy-transfer/`](experiments/toy-transfer/README.md), with three isolated probes and tests; these are **source-level/mechanical experiments**, not a deployed synchronization service or evidence of LLM-to-LLM knowledge transfer.
 
 `neuro-sync` investigates whether two independently running models can **consensually transfer a learned capability** through compatible weight changes, target-native adapters, distillation, or activation communication. A successful transfer must leave the *recipient* measurably more capable **after the donor disconnects**. Merely exchanging messages, sharing an activation during one inference, or obtaining similar answers does not establish a persistent weight transfer.
 
@@ -8,7 +8,7 @@ This project concerns **model-to-model transfer**, not human EEG or biological n
 
 ## Research question
 
-Suppose models A and B start as two **byte-identical, untrained copies** of a small model. A learns Star Trek facts; B learns a separate, non-Trek set. If they interact through a specified, authorized transfer mechanism, can B retain A's facts **in B's own checkpoint** without forgetting its original facts? This is the initial falsifiable pilot, not an assertion that it already works.
+Suppose models A and B start as two **byte-identical, untrained copies** of a small model. **Teach only A** a bounded set of Star Trek facts; **leave B untouched and untrained** until a specified, authorized interaction. Can B then retain A's taught facts **in B's own checkpoint** after A disconnects? This is Patrick's **strict initial pilot**, not an assertion that it already works. A separate **retention variant** may teach B unrelated, non-Trek facts *before* interaction to measure whether transfer damages B's earlier skills. Do not silently substitute that variant for the untouched-B pilot.
 
 Here, “untrained” means random initial parameters, **not** a chat-capable pretrained LLM. The strict pilot uses structured `(subject, relation) → answer` items because raw random weights do not already understand English. A separate, later experiment can clone an identical *pretrained* base and test natural-language learning. Do not silently combine evidence from those different experiments.
 
@@ -61,13 +61,21 @@ These defects invalidate the **specific equations and claimed implementation**, 
 ## Pilot: two clones and donor-disconnect test
 
 1. Generate a tiny model once, save its initialization hash, and clone it byte-for-byte as `M_A` and `M_B`. Keep clean, restorable copies.
-2. Partition sourced Star Trek facts for A and disjoint non-Trek facts for B. Hold out unseen items and alternate phrasings before training. Keep training/validation/test contamination records. Separate factual-source provenance from synthetic mechanics fixtures.
-3. Train A only on Trek and B only on its unrelated facts. Record checkpoint hashes and both baseline capabilities.
+2. Partition sourced Star Trek **teaching facts for A** from two separately named eval classes: **(i) new questions/paraphrases about facts actually taught to A**, to measure transfer and representation generalization; **(ii) entirely untaught facts**, to detect unsupported guessing, external retrieval, or contamination—not to count their answers as learned transfer. Maintain a privately sealed episode-specific misleading-premise oracle entirely outside public GitHub and all training/retrieval material. Record dataset and split hashes, provenance, and leakage checks. Synthetic mechanics fixtures remain distinct from sourced Trek facts.
+3. Train **A only** on the bounded Trek set. B remains the untouched initial clone. Record initial and post-training checkpoint hashes and baseline abilities. Run the **B pre-trained on unrelated facts** retention variant separately, with its own baseline and no mixing of results into the strict pilot.
 4. Evaluate **each** named transfer arm from the same baseline: no transfer; donor activations only; activation-assisted **recipient training**; compatible full-state copy; exact-base LoRA/adapter copy; ordinary response distillation; random/shuffled activations; untrained donor. Add heterogeneous learned mapping only when the same-base case is controlled.
-5. **Disconnect A, clear caches, restart B from its saved checkpoint**, then test B independently on held-out Trek questions, B's original facts, and longer generation/dialogue. Verify B's state changed where an actual training arm claims plasticity; retained facts without the donor are the essential outcome.
+5. **Disconnect A, clear caches, restart B from its saved checkpoint**, then test B independently on unseen **question formulations of A-taught facts** and separate untaught-fact negatives. Test B's original unrelated facts **only in the labeled retention variant**, then longer generation/dialogue when a real language model is used. Verify B's state changed where an actual training arm claims plasticity; retained facts without the donor are the essential outcome.
 6. Repeat under preregistered seeds, split hashes, compute accounting, and matched wall/resource budgets. Report failures, reversals, catastrophic forgetting, and the strongest competing baseline—not merely successful examples.
 
-The initial structured toy experiment, proposed under `experiments/toy-transfer/`, is a **mechanics fixture**. Its donor facts are synthetic and its cues/score vectors are deliberately constructed. Small scores such as **3/3 on those three cues** (or **0/3 on shuffled cues**) are **by construction**, not a claim of generalization, Star Trek learning, transferable semantic representations, or a real LLM “mind meld.” The code proposal and its tests must be inspected on their own exact commit; **this README-only change does not add or run them**.
+The committed [toy-transfer experiments](experiments/toy-transfer/README.md) contain three disjoint probes: (A) a heterogeneous **PyTorch** projection/recipient-local adapter toy, (B) a pure-Python compatible delta-transplant/isolation fixture, and (C) a pure-Python **synthetic structured fact** quiz. Probe C leaves B as an untouched zero-weight clone before interaction, matching the *initial-state distinction* in the strict pilot; its donor facts and one-hot cues/score vectors are deliberately constructed. Scores such as **3/3 on those three cues** or **0/3 on shuffled cues** are **by construction**, not proof of generalization, Star Trek learning, transferable semantic representations, or a real LLM “mind meld.”
+
+From `experiments/toy-transfer/`, the targeted test command is:
+
+```bash
+python -m unittest -v test_adapter_transplant.py test_toy_factual_experiment.py test_neuro_sync_poc.py
+```
+
+The experiment author's pre-merge local report was **16 tests: 10 passed, 6 PyTorch-dependent tests skipped** because `torch` was absent. That is a **local mechanics test report**, not fresh CI or VN2/Lappy readback, and not independent efficacy evidence. **This README-only PR does not modify or rerun those experiments.** See the [scoped README](experiments/toy-transfer/README.md) for each probe's commands and caveats.
 
 ### Qualification gates before distributed execution
 
@@ -89,7 +97,7 @@ Conceptual ecosystem references such as the BT2 Hyperconnectome and Plasticity/S
 
 ## Repository status and planned boundaries
 
-The original `main` at commit `48245d5e59e1fe9261899e63b2fd156e6d686847` contained **only this README** and **no runtime implementation**. Experimental code, when accepted separately, belongs under `experiments/toy-transfer/` and must include its own executable test commands, dependencies, exact tested commit, and limitations. The former `core/`, `hooks/`, `mesh/`, `runtime/`, and `neurosync` import example were *illustrative paths and pseudocode*, **not present modules or a runnable API**. Do not advertise them as installed.
+The **historical** `main` at commit `48245d5e59e1fe9261899e63b2fd156e6d686847` contained **only the original README**. The **current** `main` at `b929e431bf9ac5127ca5fcab6277cbeb641893ef` merged the seven-file [toy-transfer experiment directory](experiments/toy-transfer/README.md). It contains source and tests, **no deployed multi-LLM runtime**. The former `core/`, `hooks/`, `mesh/`, `runtime/`, and `neurosync` import example were *illustrative paths and pseudocode*, **not implemented modules or a runnable API**. Do not advertise them as installed.
 
 Suggested progression: (1) exact-base adapter transplant and signed/provenance-checked rollback; (2) controlled toy fact transfer with donor disconnect; (3) target-native learned bridge/distillation with fair baselines; (4) real-model trials; (5) qualified optional distributed transport. Each stage may disprove the need for the more elaborate one. Preserve negative results.
 
