@@ -18,9 +18,11 @@ processes.  Do not expose this as a production multi-tenant service as-is.
 from __future__ import annotations
 
 from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import re
+from types import MappingProxyType
 from typing import Any, Callable
 
 
@@ -57,7 +59,7 @@ class AccessCheck:
     """A request to host policy, not a producer's authorization claim."""
 
     context: HostBoundContext
-    operation: str  # read-pre, read-post, use
+    operation: str  # read-pre, read-post, use-pre, use
     state_key: str
     value: Any = None
 
@@ -68,19 +70,32 @@ class HostBoundReadGate:
     A receiving model chooses only a state key; it does not choose the bound
     principal, recipient, session, policy function or effect handler.  The
     hosting application's transport integration must enforce that separation.
+    The handler registry is copied and fixed when this facade is constructed
+    by its host.  This does not make a handler's code or captured state
+    immutable; production brokers must separately pin and isolate those.
     """
 
     def __init__(self, ledger: Any, *, context: HostBoundContext,
-                 authorize: Callable[[AccessCheck], bool]) -> None:
+                 authorize: Callable[[AccessCheck], bool],
+                 approved_handlers: Mapping[str, Callable[[Any], Any]] | None = None) -> None:
         if not callable(getattr(ledger, "project", None)):
             raise TypeError("a local ledger projection interface is required")
         if not isinstance(context, HostBoundContext):
             raise TypeError("a host-bound context is required")
         if not callable(authorize):
             raise TypeError("an independent host-policy callback is required")
+        if approved_handlers is not None and not isinstance(approved_handlers, Mapping):
+            raise TypeError("host-approved handler registry must be a mapping")
+        handlers: dict[str, Callable[[Any], Any]] = {}
+        for key, handler in (approved_handlers or {}).items():
+            self._state_key(key)
+            if not callable(handler):
+                raise TypeError("host-approved handler must be callable")
+            handlers[key] = handler
         self._ledger = ledger
         self._context = context
         self._authorize = authorize
+        self._handlers = MappingProxyType(handlers)
 
     @staticmethod
     def _state_key(key: str) -> str:
@@ -124,17 +139,21 @@ class HostBoundReadGate:
         self._check("read-post", key, value)
         return deepcopy(value)
 
-    def use(self, state_key: str, *, host_handler: Callable[[Any], Any]) -> Any:
-        """Reauthorize immediately before a *host-owned* effect callback.
+    def use(self, state_key: str) -> Any:
+        """Select a prebound host handler and reauthorize before its effect.
 
-        A caller who can inject ``host_handler`` can bypass the intended
-        trust boundary.  A real broker must bind it to an approved registry;
-        cross-process revocation during execution still needs atomic effect
-        custody, which this local facade does not implement.
+        The caller can select only the state key, never supply executable code
+        at invocation time.  An initial use-policy check precedes the registry
+        lookup so unauthorized callers cannot enumerate installed handlers by
+        error differences.  The host must mint the registry outside model
+        control; cross-process revocation during execution still needs atomic
+        effect custody, which this local facade does not implement.
         """
-        if not callable(host_handler):
-            raise TypeError("approved host handler required")
         key = self._state_key(state_key)
+        self._check("use-pre", key)
+        handler = self._handlers.get(key)
+        if handler is None:
+            raise ReadAccessDenied("no host-approved handler for state key")
         value = self.read(key)
         self._check("use", key, value)
-        return host_handler(deepcopy(value))
+        return handler(deepcopy(value))
