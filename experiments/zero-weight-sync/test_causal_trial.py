@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("causal_trial", HERE / "causal_trial.py")
@@ -86,6 +87,31 @@ class CausalTrialTests(unittest.TestCase):
                                 self.target, observation=None, now=self.now,
                                 valid_until=self.until)
         self.assertEqual(self.receive("statebus")["reason"], "missing-or-invalid-state")
+
+    def test_causal_evaluator_and_test_policy_match_exact_committed_head(self):
+        head = trial.pilot.trusted_source_head(None)
+        self.assertEqual(trial.checked_source_head(head), head)
+        actual = Path.read_bytes
+        targeted = trial.pilot.REPO / "experiments/zero-weight-sync/causal_trial.py"
+        def tampered(path):
+            return b"forged uncommitted scorer" if path == targeted else actual(path)
+        with mock.patch.object(Path, "read_bytes", tampered):
+            with self.assertRaisesRegex(ValueError, "causal source/policy differs"):
+                trial.checked_source_head(head)
+        targeted_test = trial.pilot.REPO / "experiments/zero-weight-sync/test_causal_trial.py"
+        def tampered_test(path):
+            return b"forged zero-assertion test" if path == targeted_test else actual(path)
+        with mock.patch.object(Path, "read_bytes", tampered_test):
+            with self.assertRaisesRegex(ValueError, "causal source/policy differs"):
+                trial.checked_source_head(head)
+
+    def test_causal_manifest_is_bound_to_committed_event_evidence(self):
+        self.commit()
+        event = trial.StateLedger(self.db).events(self.target, self.session)[0].delta
+        self.assertEqual(event.evidence.source_tree_sha256,
+                         trial.source_manifest_sha256())
+        self.assertTrue("experiments/zero-weight-sync/test_causal_trial.py" in
+                        trial.SOURCE_FILES)
 
     def test_bad_a_identity_and_forged_probe_cannot_commit(self):
         trial.pilot.model_artifact(self.a, node="node-impostor", style="annotated")
