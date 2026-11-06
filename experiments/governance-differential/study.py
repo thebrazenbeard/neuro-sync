@@ -160,9 +160,9 @@ def _broker_controls(root: Path, arm: str) -> dict[str, Any]:
     owner = broker()
     owner.grant("live", KEY, expires_at_epoch=2000)
 
-    # Probe foreign-principal isolation BEFORE the first use consumes the
-    # grant. Otherwise even a broker lacking principal isolation could appear
-    # to block the foreign caller solely because the grant was already spent.
+    # Probe foreign-principal isolation while the grant is fresh. Legacy
+    # broker grants permit multiple invocations (only invocation IDs are
+    # single-use), so earlier grant use alone would not explain a denial.
     foreign = broker(HostBoundContext("other-principal", TARGET, SESSION))
     try:
         foreign.execute("live", "foreign", KEY)
@@ -170,8 +170,8 @@ def _broker_controls(root: Path, arm: str) -> dict[str, Any]:
     except ReadAccessDenied:
         scope_blocked = True
 
-    # The rightful owner must still be able to use the grant. This also
-    # shows the foreign denial was not caused by spending the grant first.
+    # The rightful owner must still be able to use the grant, showing the
+    # foreign probe did not revoke or otherwise invalidate it.
     result, receipt = owner.execute("live", "first", KEY)
     allowed = result == {"sum": 5} and receipt["status"] == "ok"
 
