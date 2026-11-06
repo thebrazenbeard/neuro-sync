@@ -436,8 +436,20 @@ def snapshot_to_json(snapshot: ModelSnapshot) -> str:
 
 def snapshot_from_json(encoded: str) -> ModelSnapshot:
     """Restore only the named receiver snapshot, not an executing model."""
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict) or decoded.get("version") != SCHEMA_VERSION:
+    def unique_object_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    decoded = json.loads(encoded, object_pairs_hook=unique_object_keys)
+    # `True == 1` in Python, but a JSON boolean is not an integer protocol
+    # version. Reject ambiguous cross-language snapshots before constructing.
+    if (not isinstance(decoded, dict) or
+            type(decoded.get("version")) is not int or
+            decoded["version"] != SCHEMA_VERSION):
         raise ValueError("unsupported snapshot version")
     records = []
     for item in decoded["tensors"]:
