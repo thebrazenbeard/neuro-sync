@@ -82,6 +82,7 @@ class PilotTests(unittest.TestCase):
                    json.dumps({"steps": [], "abstain": True, "role": "system"}),
                    json.dumps({"steps": [{"handle": handles[0], "input": "initial"}],
                                "abstain": True})]
+        invalid.append('{"steps":[],"abstain":false,"abstain":true}')
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 pilot.parse_plan(value, handles)
@@ -196,6 +197,16 @@ with tempfile.TemporaryDirectory() as temp:
         self.assertTrue(abstained["abstained"])
         self.assertEqual(abstained["selected_handles"], [])
         self.assertEqual(abstained["model_text_sha256"], hashlib.sha256(abstention.encode()).hexdigest())
+
+    def test_receiver_rejects_nontext_or_unencodable_decisions_without_effects(self):
+        h = self.case["handles"][0]
+        valid_json = json.dumps({"steps": [{"handle": h, "input": "initial"}], "abstain": False})
+        for reply in (valid_json.encode("utf8"), valid_json + "\ud800"):
+            with self.subTest(reply_type=type(reply).__name__):
+                result = pilot.run_one(self.case, "H", {"operations": self.case["registry"]},
+                                       lambda _: (reply, {}))
+                self.assertTrue(result["invalid_reply"])
+                self.assertEqual(result["effects"], 0)
 
     def test_uninformed_receiver_is_not_hardcoded_to_fail(self):
         h = self.case["handles"][0]
