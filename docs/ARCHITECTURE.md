@@ -1,16 +1,16 @@
 # Neuro-Sync: Source Architecture and Qualification Boundaries
 
-**Status: source-level research code, not a distributed LLM runtime.** Main at
-`5be0e399ee5e4b635963cf9b5bd678597918a9e3` includes the historical toy
-baseline, the strict Trek categorical-SGD experiment (PR #4), the independent
-exact-base stdlib transfer API (PR #3), and the signed-zero fingerprint
-regression fix (PR #6), plus cross-component mechanical integration tests
-(PR #7). This document describes those checked-in components; inspect the
-exact Git head for later changes.
+**Status: source-level research code, not a distributed LLM runtime.** The first
+bounded toy/Trek mechanics were integrated through historical checkpoint
+`5be0e399ee5e4b635963cf9b5bd678597918a9e3`; subsequent StateBus source,
+bridge, integrity patch and scripted mock pilot were merged through the
+**wave-one main checkpoint `f495445d22a7c909939681d9437942e1b0995aa3`**.
+These are Git source checkpoints, not deployed services or host qualifications.
+Refresh exact live `main`, PR heads, tests and runtime before claiming currentness.
 
 ## What exists and what does not
 
-| Component | Main at `5be0e39` | Claim ceiling |
+| Component | Wave-one committed source | Claim ceiling |
 | --- | --- | --- |
 | `experiments/toy-transfer/adapter_transplant.py` | Implemented, stdlib | Compatible toy tensor/delta copy and rollback mechanics |
 | `experiments/toy-transfer/toy_factual_experiment.py` | Implemented, stdlib | Synthetic cue-to-answer association controls, **not** learned Trek knowledge |
