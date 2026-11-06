@@ -47,6 +47,26 @@ availability; an owner can revoke even when the clock has regressed.
 The legacy key-only `grant`/`execute` path is not upgraded or made safer by
 this mechanism.
 
+## Main-only snapshot rollback and plan consumption
+
+The paired sidecar now also has `consumed_plan_grants` keyed by the exact
+principal/target/session/grant ID. Immediately **before** invoking a v2 plan
+handler, the broker commits a one-use consumption entry to the independent
+sidecar while holding the main writer lock. Therefore reverting only the main
+DB to a pre-execution snapshot does not make that grant executable again,
+provided the sidecar stays intact. An interruption after this reservation but
+before the callback deliberately burns the grant without running the effect.
+
+For existing READY authorities that predate this journal, the broker performs
+one source-level migration of already-consumed grants recorded in the main DB,
+and durably marks `clock_state.consumption_journal_ready=1` in the sidecar.
+Once marked, disappearance of the journal causes **HOLD**: the broker must
+not recreate it using potentially rolled-back main bytes. A missing journal
+or malformed marker likewise denies new plan effects without blocking
+`revoke`. Migration cannot reconstruct use history already lost before the
+first upgraded broker start; preserve the existing two-file authority and
+do not treat a migration pass as a custody witness.
+
 ## Fail-closed source migration
 
 New plan approvals use `clock_guarded_plan_grants`, which is **invisible** to
@@ -87,6 +107,9 @@ version, database custody, caller identity and clock source.
 > outside this prototype's guarantees. Source tests do not qualify the
 > host or prove exactly-once external effects. A sidecar and main DB restored
 > from inconsistent snapshots may be unusable or, if UUIDs match, unsafe.
+> A sidecar historical restore or direct writer could remove consumption
+> entries together with its historical marker and revive plans; this feature
+> protects only a **main-only** rollback with the same intact sidecar.
 
 ## Reproduce source-level checks (no model calls)
 
