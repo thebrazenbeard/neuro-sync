@@ -5,12 +5,16 @@ bounded toy/Trek mechanics were integrated through historical checkpoint
 `5be0e399ee5e4b635963cf9b5bd678597918a9e3`; subsequent StateBus source,
 bridge, integrity patch and scripted mock pilot were merged through the
 **wave-one main checkpoint `f495445d22a7c909939681d9437942e1b0995aa3`**.
+Wave-two restricted-wire, host-bound read/use, and randomized causal source
+mechanics were integrated through **main checkpoint
+`c74cde653e042e7ed04879a32a5e0a57cfcb98fb`**. These additions do not
+upgrade the project to a deployed, authenticated or real-model-synchronized runtime.
 These are Git source checkpoints, not deployed services or host qualifications.
 Refresh exact live `main`, PR heads, tests and runtime before claiming currentness.
 
 ## What exists and what does not
 
-| Component | Wave-one committed source | Claim ceiling |
+| Component | Committed source status | Claim ceiling |
 | --- | --- | --- |
 | `experiments/toy-transfer/adapter_transplant.py` | Implemented, stdlib | Compatible toy tensor/delta copy and rollback mechanics |
 | `experiments/toy-transfer/toy_factual_experiment.py` | Implemented, stdlib | Synthetic cue-to-answer association controls, **not** learned Trek knowledge |
@@ -24,7 +28,10 @@ Refresh exact live `main`, PR heads, tests and runtime before claiming currentne
 | `docs/STATEBUS.md` | **Proposed higher-level wire/trust protocol**, not installed | Path C source contract; JCS and independent witness not implemented |
 | `src/neurosync/bus/{schema.py,ledger.py,__init__.py}` + `tests/test_bus_core.py` | **Merged #9**, source/local SQLite mechanics; metadata integrity follow-up **#11** | Typed StateDelta, session-scoped revision/PROPOSE→VALIDATE→local COMMIT, not external verified authority |
 | `src/neurosync/bus/bridge.py` + `tests/test_bus_bridge.py` | **Merged #10**, source tests | User/tool-mediated JSON import/export and bounded opt-in loopback client; not installed ChatGPT MCP or Qwen connection |
-| Deployed remote transport, VN2/Lappy execution, shared optimizer, production model checkpoints | **Absent** | Source loopback client does not prove any live host or distributed runtime |
+| `src/neurosync/bus/wire.py` + `tests/test_bus_wire.py` | **Merged #14**, 17 source tests including restricted Python/Node vectors | Bounded canonical `statebus-restricted-json-v1` subset, **not** RFC 8785/JCS, full envelope, auth or network interoperability |
+| `src/neurosync/bus/read_gate.py` + `tests/test_bus_read_gate.py` | **Merged #15 and hardening #17**, 20 source tests | Opt-in broker-owned scoped read/use policy, prebound handler and fail-closed controls; **not** raw SQLite ACL, real principal identity or atomic external effect |
+| `experiments/zero-weight-sync/{causal_trial.py,test_causal_trial.py}` + revised fixture | **Merged #16**, scripted randomized experiment; combined zero-weight suite 46 tests | A script discovers a synthetic task-blind opaque ref; bus **ties** ordinary JSON on correctness; unchanged B mock, no neural transfer |
+| Deployed remote StateBus transport, Neuro-Sync execution on VN2/Lappy, shared optimizer, production model checkpoints | **Absent** | Independent model endpoint smoke probes do not prove a live bus or distributed interoperability |
 
 The historical `core/`, `hooks/`, `mesh/`, and `runtime/` sketch named paths that
 never existed. An `mmap` file is not network-distributed weight synchronization.
@@ -80,6 +87,10 @@ The [StateBus v0 proposal](STATEBUS.md) is a distinct **Path C zero-weight** sta
 Immediately available *in principle* is client-mediated export/import of bounded messages. Official OpenAI docs also describe an **optional installed custom MCP server** using Server URL or Secure MCP Tunnel, subject to actual install/auth and cost gate; it is tool access, not hidden token-stream or weight hooks. An optional qualified local model endpoint likewise requires fresh host, exact model, RAM/workload and permission checks. Do not infer an active plugin, loopback server, private Blotter bus, local Qwen spare capacity, remote consensus or zero-cost tunnel from documents. A full secure tunnel may require Platform credentials and billable usage; no paid path is authorized here.
 
 **Evidence ceiling:** the higher-level wire/trust protocol remains proposed; the merged StateDelta/StateLedger and bridge have source-level tests only, with no authenticated external witness or host deployment. PROPOSE → VALIDATE → COMMIT requires an independent validator and external durable witness for a protocol-level commit. A method called StateLedger.commit() that merely appends locally is **LOCAL_APPEND_UNWITNESSED** until separately attested. Typed claimed_evidence_class and model-provided sender/surface names have no independent authority; neither do caller-minted fixture grants. Transient functional context must never be auto-promoted to memory, plasticity or identity.
+
+The new restricted transport profile deliberately rejects floats, non-ASCII keys, overly deep structures and unsafe 53-bit integer values. Its Python/Node golden vectors are a useful cross-runtime **byte encoding test**, not implementation of the full proposed RFC 8785 wire contract. The new `HostBoundReadGate` facade requires a separately trusted host to supply identity, policy, and approved handlers. It does not restrict direct access to `StateLedger.project`, and an in-process caller can forge a claimed `HostBoundContext`; external effect-check/revocation races remain. [The causal evidence contract](EXPERIMENT_EVIDENCE.md) separates these source mechanics from production authority.
+
+The [randomized zero-weight trial](../experiments/zero-weight-sync/README.md) reports seed-317 scripted heldout scores **0/8 no state, 8/8 StateBus, 8/8 ordinary JSON, 0/8 revoked grant** with an unchanged mock receiver. The plain-file tie defeats any claim that StateBus is necessary for functional inference. Its narrower value proposition is scoped external-state transport, auditable checks and revocation fixtures; any *real-model* improvement and actual independent authority remain UNKNOWN.
 
 Qualification compares **(A) B with no bus/no state**, **(B) B with read-only authorized StateBus context but unchanged weights**, and **(C) B with changed, hashed recipient weights cold-restarted while bus disconnected**. Add stale/decoy/replay, secret-sentinel, cross-session, capability-revocation and fork tests. A result limited to B is context mediation, not neural transfer. A 50-turn, Qwen3.5-35B or fully native integration claim requires independent actual runtime receipts; none is established by these docs.
 
@@ -171,7 +182,7 @@ python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
 python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 ```
 
-The [zero-weight pilot](../experiments/zero-weight-sync/README.md) additionally supports `python3 experiments/zero-weight-sync/run.py demo`: **scripted mock** A/B artifacts and host-owned local capability only, not real Qwen or an installed ChatGPT MCP tool. Its source tests include no-state, stale/decoy, revoked, forged-A and fresh B-process controls; the local host callbacks are not independently authenticated authorities.
+The [zero-weight pilots](../experiments/zero-weight-sync/README.md) additionally support `python3 experiments/zero-weight-sync/run.py demo` and `python3 experiments/zero-weight-sync/causal_trial.py demo --seed 317`: **scripted mock** A/B artifacts and host-owned local capability only, not real Qwen or an installed ChatGPT MCP tool. Their source tests include no-state, ordinary JSON-file comparator, host/operator ref baseline, stale/decoy, use-time revoked, forged-A and fresh B-process controls; the local host callbacks are not independently authenticated authorities.
 
 The Trek source's local commands are
 `python3 experiments/trek-transfer-v0/run.py --dataset trek` and
@@ -185,10 +196,16 @@ For the committed stdlib core and StateBus source:
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_core.py' -v
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_bridge.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_wire.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_read_gate.py' -v
 PYTHONPATH=src python3 -c 'from neurosync import Tensor, ModelSnapshot, build_delta_bundle, apply_delta_bundle, rollback_transfer; print(Tensor.from_nested([[1.0, 2.0]]).shape)'
 ```
 
-The toy projection's six tests skip explicitly when `torch` is absent.
+The restricted-wire suite runs real Python/Node golden vectors when `node` is
+installed; CI explicitly requires the existing Node.js interpreter and fails
+if it is absent. It tests only the narrow integer/string JSON subset, not
+RFC 8785 conformance or authorized transport. The toy projection's six tests
+skip explicitly when `torch` is absent.
 GitHub Actions CI uses only a **standard free runner while the repository is
 public**, read-only checkout, the interpreter shipped on that runner, and
 source-level unittest checks; it neither installs PyTorch nor downloads
