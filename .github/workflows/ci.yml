@@ -60,26 +60,25 @@ jobs:
       - name: Verify three-arm governance differential (no model call)
         run: python3 -m unittest discover -s experiments/governance-differential -p 'test_*.py' -v
 
-      # The explicit smoke steps above preserve historical lane receipts, but
-      # their allowlists must not silently omit newly added training tests.
+      - name: Verify tiny recipient-retention transfer falsifiers (no model call)
+        run: python3 -m unittest discover -s experiments/transfer-falsifiers -p 'test_*.py' -v
+
+      - name: Verify scenario-unit statistics and malformed receipt controls
+        run: python3 -m unittest discover -s experiments/real-model-sync/statistics -p 'test_*.py' -v
+
+      # Explicit smoke steps above preserve historical receipts, but an
+      # allowlist cannot establish that NEW training modules ran in CI.
       - name: Verify every library and integration test (not an allowlist)
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
 
-      - name: Verify all experiment test suites including newly added paths
+      - name: Verify all experiment suites recursively, including nested paths
         shell: bash
         run: |
-          discovered=0
-          for experiment in experiments/*; do
-            [[ -d "$experiment" ]] || continue
-            test_files=("$experiment"/test_*.py)
-            [[ -e "${test_files[0]}" ]] || continue
-            discovered=$((discovered + 1))
-            python3 -m unittest discover -s "$experiment" -p 'test_*.py' -v
-          done
-          if [[ "$discovered" -eq 0 ]]; then
+          mapfile -t suites < <(find experiments -type f -name 'test_*.py' -printf '%h\n' | sort -u)
+          if [[ "${#suites[@]}" -eq 0 ]]; then
             echo 'No experiment test suites discovered'
             exit 1
           fi
-
-      - name: Verify tiny recipient-retention transfer falsifiers (no model call)
-        run: python3 -m unittest discover -s experiments/transfer-falsifiers -p 'test_*.py' -v
+          for suite in "${suites[@]}"; do
+            python3 -m unittest discover -s "$suite" -p 'test_*.py' -v
+          done
