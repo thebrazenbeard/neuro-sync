@@ -295,6 +295,7 @@ class HostOwnedEffectBroker:
                 db.rollback()
                 raise
         self._init_clock_authority()
+        self._init_consumed_plan_journal()
 
     @contextmanager
     def _connect(self):
@@ -381,6 +382,111 @@ class HostOwnedEffectBroker:
                 db.rollback()
                 # A failed bootstrap leaves PENDING; no plan use is authorized.
                 return
+
+    def _init_consumed_plan_journal(self) -> None:
+        """Record already claimed v2 grants in separately committed custody.
+
+        This is a source-level migration for existing READY authorities. It
+        cannot repair a main snapshot rollback that happened *before* its
+        first run, nor a rollback of both paired host-owned files.
+        """
+        try:
+            with self._connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                binding = db.execute("SELECT binding_uuid,status FROM plan_clock_binding "
+                                     "WHERE singleton=1").fetchone()
+                if binding is None or binding["status"] != "READY":
+                    return
+                with self._clock_connect() as sidecar:
+                    sidecar.execute("BEGIN IMMEDIATE")
+                    clock = sidecar.execute("SELECT binding_uuid FROM clock_state "
+                                            "WHERE singleton=1").fetchone()
+                    if clock is None or clock["binding_uuid"] != binding["binding_uuid"]:
+                        return
+                    journal_present = sidecar.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='consumed_plan_grants'").fetchone() is not None
+                    columns = {r["name"] for r in sidecar.execute(
+                        "PRAGMA table_info(clock_state)")}
+                    if "consumption_journal_ready" in columns:
+                        status = sidecar.execute(
+                            "SELECT consumption_journal_ready FROM clock_state "
+                            "WHERE singleton=1").fetchone()[0]
+                        # Losing the journal after its initialization may
+                        # indicate a partial authority rollback. Never seed
+                        # its history from potentially reverted main bytes.
+                        if status != 1 or not journal_present:
+                            raise ReadAccessDenied("paired consumption journal unavailable")
+                        sidecar.commit()
+                        db.commit()
+                        return
+                    if journal_present:
+                        raise ReadAccessDenied("ambiguous pre-migration journal")
+                    sidecar.execute("ALTER TABLE clock_state ADD COLUMN "
+                                    "consumption_journal_ready INTEGER NOT NULL "
+                                    "DEFAULT 0 CHECK(consumption_journal_ready IN (0,1))")
+                    sidecar.execute("CREATE TABLE consumed_plan_grants ("
+                                    "principal TEXT NOT NULL,target TEXT NOT NULL,"
+                                    "session TEXT NOT NULL,grant_id TEXT NOT NULL,"
+                                    "invocation_id TEXT NOT NULL,"
+                                    "PRIMARY KEY(principal,target,session,grant_id))")
+                    # Conservatively carry forward claims made before this
+                    # implementation. This cannot reconstruct lost history.
+                    for row in db.execute(
+                            "SELECT principal,target,session,grant_id,"
+                            "plan_consumed_invocation_id FROM clock_guarded_plan_grants "
+                            "WHERE plan_consumed_invocation_id IS NOT NULL"):
+                        sidecar.execute(
+                            "INSERT OR IGNORE INTO consumed_plan_grants "
+                            "(principal,target,session,grant_id,invocation_id) "
+                            "VALUES(?,?,?,?,?)", tuple(row))
+                    sidecar.execute("UPDATE clock_state SET consumption_journal_ready=1 "
+                                    "WHERE singleton=1")
+                    sidecar.commit()
+                db.commit()
+        except (sqlite3.Error, ReadAccessDenied):
+            # Broken or missing sidecar prevents future plan effects via the
+            # use-time checkpoint, but revocation remains available.
+            return
+
+    def _reserve_plan_replay(self, db: sqlite3.Connection,
+                             grant_id: str, invocation_id: str) -> None:
+        """Durably consume a plan outside the revertible main authority DB.
+
+        Must precede any callback. A crash after this commit is deliberately
+        irreversible (HOLD), even if the callback never started.
+        """
+        if not db.in_transaction:
+            raise ReadAccessDenied("main authority writer required")
+        binding = db.execute("SELECT binding_uuid,status FROM plan_clock_binding "
+                             "WHERE singleton=1").fetchone()
+        if binding is None or binding["status"] != "READY":
+            raise ReadAccessDenied("clock authority binding unavailable")
+        try:
+            with self._clock_connect() as sidecar:
+                sidecar.execute("BEGIN IMMEDIATE")
+                clock = sidecar.execute("SELECT binding_uuid FROM clock_state "
+                                        "WHERE singleton=1").fetchone()
+                if clock is None or clock["binding_uuid"] != binding["binding_uuid"]:
+                    raise ReadAccessDenied("clock authority binding mismatch")
+                ready = sidecar.execute(
+                    "SELECT consumption_journal_ready FROM clock_state "
+                    "WHERE singleton=1").fetchone()
+                if ready is None or ready[0] != 1:
+                    raise ReadAccessDenied("paired consumption journal not initialized")
+                try:
+                    sidecar.execute(
+                        "INSERT INTO consumed_plan_grants "
+                        "(principal,target,session,grant_id,invocation_id) "
+                        "VALUES(?,?,?,?,?)", (
+                            self._context.principal_id,
+                            self._context.target_id,
+                            self._context.session_id,grant_id,invocation_id))
+                except sqlite3.IntegrityError as exc:
+                    raise ReadAccessDenied("plan grant previously consumed in paired authority") from exc
+                sidecar.commit()
+        except sqlite3.Error as exc:
+            raise ReadAccessDenied("paired plan consumption journal unavailable") from exc
 
     def _now(self) -> float:
         try:
@@ -786,6 +892,7 @@ class HostOwnedEffectBroker:
                                  state_hash=state_hash)
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
+                self._reserve_plan_replay(db, grant_id, invocation_id)
                 self._in_handler.active = True
                 try:
                     result = approved.handler(state, detached_plan)
