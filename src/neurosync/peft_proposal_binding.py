@@ -16,6 +16,8 @@ import re
 SCHEMA = "NEUROSYNC_PEFT_PROPOSAL_BINDING_V1"
 CLAIM_SCHEMA = "NEUROSYNC_PEFT_ARTIFACT_BINDING_CLAIM_V1"
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
+_SIMPLE_MODULE = re.compile(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*\Z")
+_LORA_MODULE = re.compile(r"[A-Za-z0-9_.]+\Z")
 _INSPECTION_SCHEMA = "NEUROSYNC_PEFT_ARTIFACT_PREFLIGHT_V1"
 _INTENT_SCHEMA = "NEUROSYNC_TRANSFER_PROPOSAL_V1"
 _ENVELOPE_SCHEMA = "NEUROSYNC_TRAININGDAY_TRANSFER_ENVELOPE_V1"
@@ -69,7 +71,8 @@ def _target_map(inspection: dict) -> dict:
     _fail(type(alpha) in (int, float) and math.isfinite(alpha) and alpha > 0,
           "invalid inspected LoRA alpha")
     _fail(type(targets) is list and targets and
-          all(type(t) is str and t for t in targets) and
+          all(type(t) is str and _SIMPLE_MODULE.fullmatch(t) is not None
+              for t in targets) and
           len(targets) == len(set(targets)),
           "invalid inspected target modules")
     _fail(type(inspection.get("lora_scaling")) in (int, float) and
@@ -84,7 +87,8 @@ def _target_map(inspection: dict) -> dict:
         _fail(type(pair) is dict and set(pair) == expected_keys,
               "unsupported tensor map entry")
         name = pair["module"]
-        _fail(type(name) is str and name and name not in names,
+        _fail(type(name) is str and _LORA_MODULE.fullmatch(name) is not None and
+              name not in names,
               "duplicate or missing module name")
         names.add(name)
         _fail(type(pair["rank"]) is int and pair["rank"] == rank and
@@ -93,8 +97,10 @@ def _target_map(inspection: dict) -> dict:
               pair["dtype"] in ("BF16", "F16", "F32", "F64") and
               type(pair["target"]) is str and pair["target"] in targets,
               "invalid rank/dtype/shape/target")
-        _fail(name == pair["target"] or name.endswith("." + pair["target"]),
-              "module does not match declared target suffix")
+        matching = [target for target in targets
+                    if name == target or name.endswith("." + target)]
+        _fail(len(matching) == 1 and matching[0] == pair["target"],
+              "module has an invalid or ambiguous target suffix")
         observed_targets.add(pair["target"])
     _fail(observed_targets == set(targets), "unpaired target in inspected map")
     return {"rank": rank, "lora_alpha": alpha,
@@ -177,6 +183,9 @@ def bind_peft_inspection_to_proposal(
     _fail(claim["adapter_weights_sha256"] !=
           claim["donor_trained_checkpoint_sha256"],
           "adapter-only and full checkpoint artifact roles must be distinct")
+    _fail(claim["adapter_weights_sha256"] != lineage["recipient_base_sha256"] and
+          claim["adapter_config_sha256"] != claim["adapter_weights_sha256"],
+          "adapter weights, base checkpoint and config file roles must be distinct")
     target_digest = _canonical_sha(_target_map(inspection))
     _fail(claim["target_map_sha256"] == target_digest,
           "inspected rank/dtype/shape/target map mismatch")

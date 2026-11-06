@@ -2,6 +2,9 @@
 
 import hashlib
 import json
+from pathlib import Path
+import struct
+import tempfile
 import unittest
 
 from neurosync.peft_proposal_binding import bind_peft_inspection_to_proposal
@@ -124,10 +127,31 @@ class BindingTests(unittest.TestCase):
         b["adapter_weights_sha256"] = b["donor_trained_checkpoint_sha256"]
         with self.assertRaises(ValueError):
             bind_peft_inspection_to_proposal(a, i, p, b)
+        a, i, p, b = fixture()
+        a["adapter_sha256"] = b["adapter_weights_sha256"] = i["lineage"]["recipient_base_sha256"]
+        with self.assertRaises(ValueError):
+            bind_peft_inspection_to_proposal(a, i, p, b)
 
     def test_same_module_names_but_different_shapes_fail_target_map_binding(self):
         a, i, p, b = fixture()
         a["lora_pairs"][0]["input_features"] = 99
+        with self.assertRaises(ValueError):
+            bind_peft_inspection_to_proposal(a, i, p, b)
+
+    def test_cannot_bind_syntactically_impossible_inspector_target_map(self):
+        a, i, p, b = fixture()
+        a["target_modules"] = ["q_proj", "model.q_proj"]
+        a["lora_pairs"].append({**a["lora_pairs"][0],
+                                "module": "base_model.model.model.q_proj",
+                                "target": "model.q_proj"})
+        b["target_map_sha256"] = target_map_digest(a)
+        with self.assertRaises(ValueError):
+            bind_peft_inspection_to_proposal(a, i, p, b)
+        a, i, p, b = fixture()
+        a["target_modules"] = ["q_proj\n"]
+        a["lora_pairs"][0]["target"] = "q_proj\n"
+        a["lora_pairs"][0]["module"] = "base_model.model.q_proj\n"
+        b["target_map_sha256"] = target_map_digest(a)
         with self.assertRaises(ValueError):
             bind_peft_inspection_to_proposal(a, i, p, b)
 
@@ -166,6 +190,45 @@ class BindingTests(unittest.TestCase):
                 p["admission"]["physical_launch_authority"] = "ALLOW"
             with self.subTest(mutated=mutated), self.assertRaises(ValueError):
                 bind_peft_inspection_to_proposal(a, i, p, b)
+
+    def test_actual_inspector_and_proposal_modules_compose_when_integrated(self):
+        # Draft #48 is deliberately standalone; this test only executes after
+        # #37 and #38 arrive in the same source tree. The standalone branch
+        # reports this integration test as SKIPPED, never as a verified join.
+        try:
+            from neurosync.peft_preflight import inspect_peft_lora_artifacts
+            from neurosync.trainingday_proposal import propose_transfer
+        except ImportError:
+            self.skipTest("source-only PR #37/#38 modules not integrated")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight"
+            b = "base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight"
+            header = {
+                a: {"dtype": "BF16", "shape": [2, 3], "data_offsets": [0, 12]},
+                b: {"dtype": "BF16", "shape": [4, 2], "data_offsets": [12, 28]},
+            }
+            raw_header = json.dumps(header).encode()
+            (root / "adapter_model.safetensors").write_bytes(
+                struct.pack("<Q", len(raw_header)) + raw_header + b"\x00" * 28)
+            (root / "adapter_config.json").write_text(json.dumps({
+                "peft_type": "LORA", "base_model_name_or_path": "example/Qwen4B",
+                "revision": "f" * 40, "r": 2, "lora_alpha": 4,
+                "target_modules": ["q_proj"], "bias": "none",
+            }))
+            observed = inspect_peft_lora_artifacts(root)
+            _, intent, _, claim = fixture()
+            intent["lineage"]["adapter_config_sha256"] = observed["config_sha256"]
+            envelope = propose_transfer(intent)
+            claim["adapter_weights_sha256"] = observed["adapter_sha256"]
+            claim["adapter_config_sha256"] = observed["config_sha256"]
+            claim["target_map_sha256"] = target_map_digest(observed)
+            joined = bind_peft_inspection_to_proposal(observed, intent, envelope, claim)
+            self.assertFalse(joined["trainingday_ready"])
+            self.assertEqual(joined["physical_launch_authority"], "HOLD")
+            observed["lora_pairs"][0]["input_features"] = 99
+            with self.assertRaises(ValueError):
+                bind_peft_inspection_to_proposal(observed, intent, envelope, claim)
 
 
 if __name__ == "__main__":

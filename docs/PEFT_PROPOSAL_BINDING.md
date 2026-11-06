@@ -28,6 +28,10 @@ different proposed target maps. The validator checks exact donor/recipient
 base, tokenizer and model-config SHA equality, candidate adapter/config
 digests, proposal/intent digest equality, split roles, rights-reference
 consistency, $0 external budget and donor-disconnected evaluation controls.
+It applies the same strict target suffix matching as the PEFT inspector:
+overlapping patterns (such as `q_proj` and `model.q_proj`) or malformed target
+names are rejected, even when the caller recomputes a self-consistent digest.
+Adapter-weights SHA may not alias the full donor or recipient-base checkpoint.
 
 The output is `NEUROSYNC_PEFT_PROPOSAL_BINDING_V1` with
 `SELF_REPORTED_CROSS_CONSISTENCY_ONLY`, `physical_launch_authority=HOLD`,
@@ -48,4 +52,7 @@ learned behavior, generalization or an authenticated recipient load.
   TRAININGDAY's existing physical HOLD.
 
 The tests use fabricated SHA strings and synthetic tensor maps; no Qwen weights
-or user-owned host files were read or modified.
+or user-owned host files were read or modified. One test invokes the actual
+inspector and proposal modules on generated synthetic safetensors when Drafts
+#37 and #38 are installed together. It is explicitly **SKIPPED** in Draft
+#48's standalone branch, and must pass in the combined integration tree.
