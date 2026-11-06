@@ -57,6 +57,11 @@ jobs:
       - name: Verify durable clock authority rollback and fail-closed controls
         run: test -f tests/test_bus_clock_floor.py && PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_clock_floor.py' -v
 
+      # Draft PRs can introduce new test_*.py modules which the named checks
+      # above do not collect. Keep this catch-all as a forward coverage gate.
+      - name: Verify all root library test modules, including new PR tests
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 
