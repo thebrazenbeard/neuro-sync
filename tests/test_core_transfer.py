@@ -154,8 +154,19 @@ class TransferTests(unittest.TestCase):
             rollback_transfer(drift, receipt)
         with self.assertRaisesRegex(ValueError, "version"):
             rollback_transfer(result, replace(receipt, version=99))
-        with self.assertRaisesRegex(ValueError, "before fingerprint"):
-            rollback_transfer(result, replace(receipt, before_fingerprint="wrong"))
+        with self.assertRaisesRegex(ValueError, "integrity digest"):
+            rollback_transfer(result, replace(
+                receipt, before_fingerprint="wrong",
+                integrity_sha256=receipt.integrity_sha256,
+            ))
+        for tampered in (
+            replace(receipt, transfer_id="forged"),
+            replace(receipt, manifest_sha256="forged"),
+            replace(receipt, strength=0.3),
+            replace(receipt, after_fingerprint="forged"),
+        ):
+            with self.subTest(tampered=tampered), self.assertRaisesRegex(ValueError, "integrity digest"):
+                rollback_transfer(result, tampered)
         with self.assertRaisesRegex(ValueError, "receiver mismatch"):
             rollback_transfer(make_snapshot("wrong"), receipt)
 

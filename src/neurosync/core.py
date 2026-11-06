@@ -212,6 +212,21 @@ class TransferReceipt:
     before_fingerprint: str
     after_fingerprint: str
     before: ModelSnapshot
+    integrity_sha256: str
+
+
+def _receipt_digest(
+    *, version: int, transfer_id: str, receiver_id: str,
+    manifest_sha256: str, strength: float,
+    before_fingerprint: str, after_fingerprint: str,
+) -> str:
+    """Unkeyed corruption check only; an attacker can forge a new digest."""
+    return _hash_json({
+        "version": version, "transfer_id": transfer_id,
+        "receiver_id": receiver_id, "manifest_sha256": manifest_sha256,
+        "strength": strength, "before_fingerprint": before_fingerprint,
+        "after_fingerprint": after_fingerprint,
+    })
 
 
 def build_delta_bundle(
@@ -312,11 +327,15 @@ def apply_delta_bundle(
             copied.append((name, Tensor(original.shape, tuple(original.values))))
     result = ModelSnapshot(receiver.model_id, receiver.architecture_id,
                            receiver.schema_id, tuple(copied))
-    receipt = TransferReceipt(
+    receipt_fields = dict(
         version=RECEIPT_VERSION, transfer_id=m.transfer_id,
         receiver_id=receiver.model_id, manifest_sha256=m.sha256(),
         strength=lam, before_fingerprint=receiver.fingerprint(),
-        after_fingerprint=result.fingerprint(), before=receiver,
+        after_fingerprint=result.fingerprint(),
+    )
+    receipt = TransferReceipt(
+        **receipt_fields, before=receiver,
+        integrity_sha256=_receipt_digest(**receipt_fields),
     )
     return result, receipt
 
@@ -324,11 +343,22 @@ def apply_delta_bundle(
 def rollback_transfer(current: ModelSnapshot, receipt: TransferReceipt) -> ModelSnapshot:
     """Restore only the exact receiver/result pair; reject post-transfer drift.
 
-    Receipts are immutable but NOT signed. A malicious party able to forge a
-    receipt bypasses this local check; real systems need authenticated logs.
+    Receipt metadata has an unkeyed digest to reject accidental/casual edits,
+    but it is NOT signed. A malicious party able to forge a receipt and digest
+    bypasses this check; real systems need authenticated logs.
     """
     if receipt.version != RECEIPT_VERSION:
         raise ValueError("unsupported receipt version")
+    fields = dict(
+        version=receipt.version, transfer_id=receipt.transfer_id,
+        receiver_id=receipt.receiver_id,
+        manifest_sha256=receipt.manifest_sha256,
+        strength=receipt.strength,
+        before_fingerprint=receipt.before_fingerprint,
+        after_fingerprint=receipt.after_fingerprint,
+    )
+    if _receipt_digest(**fields) != receipt.integrity_sha256:
+        raise ValueError("receipt integrity digest mismatch")
     if current.model_id != receipt.receiver_id or receipt.before.model_id != receipt.receiver_id:
         raise ValueError("receipt receiver mismatch")
     if receipt.before.fingerprint() != receipt.before_fingerprint:
