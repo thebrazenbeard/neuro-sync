@@ -545,7 +545,8 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
                          if arm in arms)
         states = {arm: _arm_state(arm, case, root) for arm in prepared}
         if all(arm in states for arm in ("P", "H", "V")):
-            assert states["P"] == states["H"] == states["V"]
+            if not (states["P"] == states["H"] == states["V"]):
+                raise ValueError("divergent P/H/V external state fixtures")
         for arm in arm_order:
             results.append(run_one(case, arm, states[arm], model_client))
     return {"experiment": VERSION, "model_evidence": model_evidence,
