@@ -171,6 +171,23 @@ class ZeroWeightPilotTests(unittest.TestCase):
         self.assertEqual(pilot.StateLedger(self.db).project("shared-runtime", "study"), {})
         self.assertEqual(self.receive()["reason"], "missing-capability")
 
+    def test_revocation_after_commit_denies_fresh_receiver_use(self):
+        self.grant()
+        self.assertTrue(self.receive()["ok"])
+        pilot.revoke_use_grant(self.db, session="study", target="shared-runtime")
+        self.assertEqual(self.receive()["reason"], "no-active-use-grant")
+
+    def test_replay_cannot_reenable_revoked_use_grant(self):
+        self.grant()
+        pilot.revoke_use_grant(self.db, session="study", target="shared-runtime")
+        self.grant()  # idempotent bus retry, not new host authority
+        self.assertEqual(self.receive()["reason"], "no-active-use-grant")
+
+    def test_missing_host_use_grant_is_fail_closed(self):
+        self.grant()
+        pilot.use_grant_path(self.db, session="study", target="shared-runtime").unlink()
+        self.assertEqual(self.receive()["reason"], "no-active-use-grant")
+
     def test_session_and_target_isolation(self):
         self.grant(session="session-a")
         self.assertTrue(self.receive(session="session-a")["ok"])
