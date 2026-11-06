@@ -24,12 +24,20 @@ def evaluate_in_new_process(model, facts, workspace):
                               input=json.dumps(queries), text=True, capture_output=True,
                               timeout=20, check=True)
     result = json.loads(response.stdout)
+    if type(result) is not dict or set(result) != {"checkpoint_sha256", "query_sha256", "predictions"}:
+        raise ValueError("receiver subprocess returned an invalid transcript")
     if result["checkpoint_sha256"] != sha256(model.checkpoint()):
         raise AssertionError("receiver-only process loaded an unexpected checkpoint")
+    if result["query_sha256"] != sha256(queries):
+        raise AssertionError("receiver-only process answered an unexpected query transcript")
     predictions = result["predictions"]
+    if (type(predictions) is not list or len(predictions) != len(facts) or
+            any(type(p) is not str or p not in model.answers for p in predictions)):
+        raise ValueError("receiver subprocess returned invalid predictions")
     return {"correct": sum(p == f.answer for p, f in zip(predictions, facts)),
             "total": len(facts), "predictions": predictions,
             "checkpoint_sha256": result["checkpoint_sha256"],
+            "query_sha256": result["query_sha256"],
             "new_process": True}
 
 

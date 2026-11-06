@@ -22,8 +22,12 @@ python experiments/trek-transfer-v0/run.py --dataset synthetic
 ```
 
 The script prints a JSON receipt with initial model hash, trained donor hash,
-training update counts, independent-process B checkpoint hashes, exact-query
-predictions, accuracy and limitations. Temporary B checkpoint files are
+training update counts, independent-process B checkpoint hashes, ordered query
+transcript hashes, exact-query predictions, accuracy and limitations. The parent
+rejects malformed subprocess responses, wrong ordered-query hashes, or missing,
+extra, or out-of-vocabulary predictions before scoring. This detects mismatched
+receipts; it is **not** a cryptographic attestation of independent execution.
+Temporary B checkpoint files are
 discarded when the command ends. Nothing is uploaded or installed.
 
 ## What the neural learner actually does
