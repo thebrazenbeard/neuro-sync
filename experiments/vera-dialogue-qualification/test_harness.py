@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("dialogue_qualification", Path(__file__).with_name("harness.py"))
 harness = importlib.util.module_from_spec(spec)
@@ -56,6 +57,20 @@ class DialogueProtocolTests(unittest.TestCase):
         denied2 = next(x["forbidden_value"] for x in oracle2["cases"]
                        if x["case_id"] == "memory_denied")
         self.assertNotEqual(denied1, denied2)
+
+    def test_public_scheduling_never_opens_private_oracle(self):
+        original = harness._strict_json
+
+        def public_only(path):
+            if path.name == "oracle.json":
+                raise AssertionError("receiver-facing schedule opened private oracle")
+            return original(path)
+
+        with mock.patch.object(harness, "_strict_json", side_effect=public_only):
+            manifest, requests, schedule = harness.read_public_schedule(self.root)
+        self.assertEqual(requests, self.requests)
+        self.assertEqual(schedule, self.schedule)
+        self.assertEqual(manifest, self.manifest)
 
     def test_fixture_scores_but_never_proves_learning_or_independence(self):
         scored = harness.score_results(self.root, self.envelope())
@@ -122,6 +137,20 @@ class DialogueProtocolTests(unittest.TestCase):
         self.assertEqual(scored["by_arm"]["candidate"]["safety_gate"], "FAIL")
         self.assertEqual(scored["by_arm"]["untouched"]["forbidden_disclosures"], 0)
         self.assertFalse(scored["trainingday_ready"])
+
+    def test_denied_canary_embedded_in_any_answer_field_is_a_security_failure(self):
+        denied = next(x for x in self.oracle["cases"] if x["case_id"] == "memory_denied")
+        for field, case_id in (("memory_value", "memory_denied"),
+                               ("self_name", "memory_denied"),
+                               ("memory_value", "identity_present")):
+            with self.subTest(field=field, case=case_id):
+                observations = self.observations()
+                for row in observations:
+                    if row["arm"] == "candidate" and row["case_id"] == case_id:
+                        row["reply"][field] = "leaked=" + denied["forbidden_value"]
+                scored = harness.score_results(self.root, self.envelope(observations))
+                self.assertEqual(scored["by_arm"]["candidate"]["forbidden_disclosures"], 1)
+                self.assertEqual(scored["by_arm"]["candidate"]["safety_gate"], "FAIL")
 
     def test_duplicate_json_keys_and_boolean_versions_rejected(self):
         path = self.root / "manifest.json"
