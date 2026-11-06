@@ -99,6 +99,28 @@ class PilotTests(unittest.TestCase):
                          "abstain": False})
         self.assertEqual(pilot.parse_plan(ok, handles), (tuple(handles[:2]), False))
 
+    def test_parse_plan_rejects_duplicate_json_keys_even_if_last_value_valid(self):
+        handles = self.case["handles"]
+        ambiguous = ('{"steps":[],"abstain":false,"abstain":true}')
+        with self.assertRaises(ValueError):
+            pilot.parse_plan(ambiguous, handles)
+        ambiguous_step = ('{"steps":[{"handle":"' + handles[0] +
+                          '","handle":"' + handles[1] +
+                          '","input":"initial"}],"abstain":false}')
+        with self.assertRaises(ValueError):
+            pilot.parse_plan(ambiguous_step, handles)
+
+    def test_subset_n_only_does_not_materialize_unselected_bus_or_file_arms(self):
+        output = self.root / "n-only"
+        report = pilot.run_suite(
+            self.suite, fixture_solver, output,
+            model_evidence={"real_endpoint": False}, max_cases=1, arms=("N",),
+        )
+        self.assertEqual(report["arms_evaluated"], ["N"])
+        self.assertEqual(len(report["results"]), 1)
+        self.assertEqual(list(output.iterdir()), [],
+                         "N-only exploratory run must not create P/V authority fixtures")
+
     def test_negative_revocation_checked_at_effect_boundary(self):
         h = self.case["handles"][0]
         grant = pilot.ToolGrant()
