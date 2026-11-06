@@ -143,11 +143,14 @@ class HostBoundReadGate:
         """Select a prebound host handler and reauthorize before its effect.
 
         The caller can select only the state key, never supply executable code
-        at invocation time.  The host must mint the registry outside model
+        at invocation time.  An initial use-policy check precedes the registry
+        lookup so unauthorized callers cannot enumerate installed handlers by
+        error differences.  The host must mint the registry outside model
         control; cross-process revocation during execution still needs atomic
         effect custody, which this local facade does not implement.
         """
         key = self._state_key(state_key)
+        self._check("use", key)
         handler = self._handlers.get(key)
         if handler is None:
             raise ReadAccessDenied("no host-approved handler for state key")
