@@ -286,6 +286,35 @@ class HostOwnedEffectBrokerTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "ok")
         self.assertIsNotNone(owner.attempt("once"))
 
+    def test_overdeep_host_state_denied_without_ambiguous_claim_or_effect(self):
+        # A small JSON payload can still exceed the encoder recursion limit.
+        # Reject it with a recorded denial, not an uncaught exception that
+        # leaves a durable, unreconstructible `claimed` invocation.
+        nested = {"value": 0}
+        for _ in range(10_000):
+            nested = [nested]
+        self.ledger.value = nested
+        broker = self.broker()
+        broker.grant("grant1", "capabilities.synthetic", expires_at_epoch=200)
+        with self.assertRaisesRegex(ReadAccessDenied, "bounded JSON"):
+            broker.execute("grant1", "too-deep", "capabilities.synthetic")
+        self.assertEqual(broker.attempt("too-deep")["status"], "denied")
+        self.assertEqual(self.effects, [])
+        with self.assertRaisesRegex(ReadAccessDenied, "invocation replay denied"):
+            self.broker().execute("grant1", "too-deep", "capabilities.synthetic")
+
+    def test_host_ledger_exception_is_denied_before_handler_not_ambiguous(self):
+        def unavailable_projection(_target, _session):
+            raise RuntimeError("host ledger unavailable")
+
+        self.ledger.project = unavailable_projection
+        broker = self.broker()
+        broker.grant("grant1", "capabilities.synthetic", expires_at_epoch=200)
+        with self.assertRaisesRegex(ReadAccessDenied, "ledger projection unavailable"):
+            broker.execute("grant1", "ledger-down", "capabilities.synthetic")
+        self.assertEqual(broker.attempt("ledger-down")["status"], "denied")
+        self.assertEqual(self.effects, [])
+
 
 if __name__ == "__main__":
     unittest.main()
