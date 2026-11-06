@@ -336,12 +336,24 @@ def apply_delta_bundle(
     if any(name not in receiver_map or receiver_map[name].shape != tensor.shape
            for name, tensor in bundle.targets):
         raise ValueError("absolute target tensor name/shape mismatch")
+    # Individually correct hashes do not imply that a delta and an absolute
+    # target describe the same update. Recompute their relation from the
+    # receiver's verified exact base, including finite subtraction checks.
+    # Hex hashes also distinguish signed zero, which float == does not.
+    delta_map = dict(bundle.deltas)
+    for name, target in bundle.targets:
+        original = receiver_map[name]
+        computed = Tensor(original.shape, tuple(
+            trained - base for trained, base in zip(target.values, original.values)
+        ))
+        if computed.sha256() != delta_map[name].sha256():
+            raise ValueError("inconsistent delta versus absolute target/base")
     _check_grant(export_grant, actor=m.donor_id, counterpart=m.receiver_id,
                  operation="export-delta", bundle=bundle, now_epoch=now)
     _check_grant(import_grant, actor=m.receiver_id, counterpart=m.donor_id,
                  operation="import-delta", bundle=bundle, now_epoch=now)
 
-    changed = dict(bundle.deltas)
+    changed = delta_map
     targets = dict(bundle.targets)
     copied: list[tuple[str, Tensor]] = []
     for name, original in receiver.tensors:

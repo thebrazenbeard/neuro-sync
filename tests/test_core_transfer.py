@@ -155,6 +155,26 @@ class TransferTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "absolute targets manifest hash"):
             apply_delta_bundle(self.b, wrong_target, self.export, self.importer, now_epoch=1500)
 
+    def test_self_hashed_inconsistent_delta_target_still_rejected(self):
+        """Hashes and caller-minted grants cannot bypass arithmetic relation."""
+        fake_delta = Tensor.from_nested([[0.25, 0.0], [0.0, 0.25]])
+        fake_target = Tensor.from_nested([[100.0, 100.0], [100.0, 100.0]])
+        fake_manifest = replace(
+            self.bundle.manifest,
+            delta_hashes=(("encoder.weight", fake_delta.sha256()),),
+            target_hashes=(("encoder.weight", fake_target.sha256()),),
+        )
+        forged = DeltaBundle(
+            fake_manifest, (("encoder.weight", fake_delta),),
+            (("encoder.weight", fake_target),),
+        )
+        export = replace(self.export, manifest_sha256=fake_manifest.sha256())
+        importer = replace(self.importer, manifest_sha256=fake_manifest.sha256())
+        for strength in (0.999, 1.0):
+            with self.subTest(strength=strength), self.assertRaisesRegex(ValueError, "inconsistent delta"):
+                apply_delta_bundle(self.b, forged, export, importer,
+                                   now_epoch=1500, strength=strength)
+
     def test_cancellation_adversary_full_strength_is_bit_exact(self):
         donor_base = ModelSnapshot("A", "float-cancellation", "schema-v1",
                                    (("w", Tensor.from_nested([1e20])),))
