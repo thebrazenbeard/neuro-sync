@@ -33,6 +33,12 @@ jobs:
       - name: Verify exact-base core contract
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
 
+      - name: Verify integrated PEFT file inspection, typed binder, and real-byte bridge
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*peft*py' -v
+
+      - name: Verify Path A/B TRAININGDAY transfer intent
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_trainingday_proposal.py' -v
+
       - name: Verify StateBus core local-ledger mechanics
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_core.py' -v
 
