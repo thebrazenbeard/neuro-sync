@@ -65,3 +65,20 @@ jobs:
 
       - name: Verify scenario-unit statistics and malformed receipt controls
         run: python3 -m unittest discover -s experiments/real-model-sync/statistics -p 'test_*.py' -v
+
+      # Explicit smoke steps above preserve historical receipts, but an
+      # allowlist cannot establish that NEW training modules ran in CI.
+      - name: Verify every library and integration test (not an allowlist)
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Verify all experiment suites recursively, including nested paths
+        shell: bash
+        run: |
+          mapfile -t suites < <(find experiments -type f -name 'test_*.py' -printf '%h\n' | sort -u)
+          if [[ "${#suites[@]}" -eq 0 ]]; then
+            echo 'No experiment test suites discovered'
+            exit 1
+          fi
+          for suite in "${suites[@]}"; do
+            python3 -m unittest discover -s "$suite" -p 'test_*.py' -v
+          done
