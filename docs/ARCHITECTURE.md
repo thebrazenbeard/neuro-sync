@@ -1,18 +1,23 @@
 # Neuro-Sync: Source Architecture and Qualification Boundaries
 
-**Status: research code, not a distributed LLM runtime.** This document describes
-the committed toy experiments on `main` at `e95b591da42e7671eda51e884988ec273aa2e6d3`
-and the separately proposed small-library API. Future PRs may change the source
-tree; inspect the exact Git head before treating a component as implemented.
+**Status: source-level research code, not a distributed LLM runtime.** Main at
+`6157e719bd2da141cf92f542c1b5f29ed1185e13` includes the historical toy
+baseline, the strict Trek categorical-SGD experiment (PR #4), the independent
+exact-base stdlib transfer API (PR #3), and the signed-zero fingerprint
+regression fix (PR #6). This document describes those checked-in components;
+inspect the exact Git head for later changes.
 
 ## What exists and what does not
 
-| Component | Main at `e95b591` | Claim ceiling |
+| Component | Main at `6157e71` | Claim ceiling |
 | --- | --- | --- |
 | `experiments/toy-transfer/adapter_transplant.py` | Implemented, stdlib | Compatible toy tensor/delta copy and rollback mechanics |
 | `experiments/toy-transfer/toy_factual_experiment.py` | Implemented, stdlib | Synthetic cue-to-answer association controls, **not** learned Trek knowledge |
 | `experiments/toy-transfer/neuro_sync_poc.py` | Implemented, optional PyTorch | Local projection/recipient-adapter gradient mechanics; no real LLM transfer |
-| `src/neurosync/` | **Not in this base head** | Separately proposed auditable stdlib library; do not import from main until merged |
+| `experiments/trek-transfer-v0/{fixtures.py,learner.py,predictor.py,run.py}` | **Merged in #4**, stdlib | Small categorical SGD learner; six short sourced Trek symbol triples plus six separate synthetic noncanon triples |
+| `experiments/trek-transfer-v0/test_transfer.py` | **Merged in #4**, stdlib | Eight targeted tests of initialization, controls, and fresh-process recipient readback |
+| `src/neurosync/core.py`, `src/neurosync/__init__.py` | **Merged in #3**, stdlib | Exact-base tensor-delta extraction, bounded transfer, typed receipt, rollback; no authenticated rights or real model adapters |
+| `tests/test_core_transfer.py` | **Merged in #3**, stdlib | Adversarial core mechanics, numeric-integrity checks, no real-model effect |
 | Network transport, VN2/Lappy execution, shared optimizer, model checkpoints | **Absent** | No runtime or host qualification claim |
 
 The historical `core/`, `hooks/`, `mesh/`, and `runtime/` sketch named paths that
@@ -20,24 +25,27 @@ never existed. An `mmap` file is not network-distributed weight synchronization.
 Independent models do not share a gradient graph simply because their tensors
 can be transmitted to one another.
 
-## Proposed public small-library contract (pending its own PR)
+## Current small-library API and limits
 
-The core developer's planned `src/neurosync/core.py` API consists of immutable
+The implemented `src/neurosync/core.py` API consists of immutable
 `Tensor` values, `ModelSnapshot` identifiers and named tensors, `ScopedGrant`,
 `DeltaBundle`/`DeltaManifest`, and `TransferReceipt`, with operations:
 
 ```python
-build_delta_bundle(donor_base, donor_trained, receiver_id, transfer_id)
+build_delta_bundle(donor_base, donor_trained, receiver_id=receiver_id, transfer_id=transfer_id)
 apply_delta_bundle(receiver, bundle, export_grant, import_grant, strength=1.0)
 rollback_transfer(current, receipt)
 ```
 
-These are **target signatures, not working imports on the base head**. The
-implementation PR must separately prove exact-base/schema/shape compatibility,
-finite numeric values, no writable donor-recipient tensor aliasing, immutable
-source snapshots, bounded transfer strength, deterministic artifact fingerprints,
-and rollback against tampered receipts. A fingerprint that intentionally excludes
-`model_id` identifies **content**, not the operator or authorization subject.
+These are real public source functions, re-exported by `src/neurosync/__init__.py`.
+The implementation enforces exact-base/schema/shape compatibility, finite
+numeric values, isolated immutable result tensors, `0≤strength≤1`, deterministic
+artifact fingerprints, and receipt-bound rollback against accidental tampering.
+These checks are **mechanical**, not an authenticated grant service or formal
+proof of mathematical/semantic safety. In particular, strength bounds a
+coefficient, **not** the update norm or its behavioral effect. A fingerprint
+that intentionally excludes `model_id` identifies **content**, not the
+operator or authorization subject.
 
 `ScopedGrant` in this toy API is a structured permission *fixture*, not an
 authenticated rights-holder credential, digital signature, proof of consent,
@@ -46,8 +54,11 @@ identity, key custody, time-bounded grants, revocation, replay controls, and
 durable independent source/recipient records.
 
 The package metadata in `pyproject.toml` has no mandatory runtime dependencies.
-The optional `torch` extra supports only the PyTorch toy. A publishable install
-and supported import API remain gated on merging and testing `src/neurosync/`.
+The optional `torch` extra supports only the PyTorch toy. Source import uses
+`PYTHONPATH=src`; this packaging PR was also smoke-tested with an offline,
+no-dependency wheel build and installation to an isolated temporary target,
+followed by import of the public symbols. That establishes **packaging
+mechanics for this exact tree**, not a published release or a production API.
 No package publication or implied external redistribution license is authorized.
 
 ## Compatibility tiers (separate evidence classes)
@@ -74,10 +85,15 @@ results. Random initial weights cannot be presumed natural-language competent.
 
 The public synthetic toy under `experiments/toy-transfer/` is a mechanics
 fixture with constructed cue/answer weights, not a sourced canonical Trek fact
-dataset. The future factual teaching set may contain short, independently
-verified CC0 Wikidata structured statements and original phrasing. It must
-never wholesale ingest scripts, episode transcript dialogue, book text,
-publisher synopses, artwork, or unlicensed wiki prose. Patrick's
+dataset. The separately merged `experiments/trek-transfer-v0/` uses six short,
+manually encoded Trek factual triples with first-party StarTrek.com source URLs,
+and six **NONCANON** original triples in a separate fixture. These facts train
+and test the exact same symbolic queries; even a perfect score does **not**
+prove unseen-question generalization or fresh pretrained-LM knowledge. Future
+fact sets may use short, independently verified CC0 Wikidata structured
+statements and original phrasing. No experiment may wholesale ingest scripts,
+episode transcript dialogue, book text, publisher synopses, artwork, or
+unlicensed wiki prose. Patrick's
 `trek-data-core` contains **candidate metadata**, not accepted story evidence
 or a cleared long-text training corpus. Its proprietary license is not a
 blanket third-party content license.
@@ -118,9 +134,10 @@ benefit requires independent held-out statistics beyond the deterministic toy.
 
 Original model weights, keys, credentials, private oracles, and prompt logs
 must never enter public CI or GitHub artifacts. Do not use protected hosts
-without fresh operator approval and resource checks. No cloud compute,
-paid APIs, hosted models, large runners, or remote deployments are part of
-this implementation.
+without fresh operator approval and resource checks. No **paid external
+model-training compute**, hosted model APIs, GitHub larger/GPU runners, or
+remote deployments are part of this implementation. Standard free public
+GitHub Actions CI executes only short source-level tests.
 
 ## Reproduce the source-level checks
 
@@ -128,12 +145,20 @@ From the repository root (no package install or network request):
 
 ```bash
 python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v
+python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
 ```
+
+The Trek source's local commands are
+`python3 experiments/trek-transfer-v0/run.py --dataset trek` and
+`python3 experiments/trek-transfer-v0/run.py --dataset synthetic`.
+Both run a tiny structured learner and evaluate B in a fresh Python subprocess;
+neither trains or transfers between actual LLMs or accesses a remote donor.
 
 After the separately proposed stdlib core implementation is merged:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
+PYTHONPATH=src python3 -c 'from neurosync import Tensor, ModelSnapshot, build_delta_bundle, apply_delta_bundle, rollback_transfer; print(Tensor.from_nested([[1.0, 2.0]]).shape)'
 ```
 
 The toy projection's six tests skip explicitly when `torch` is absent.

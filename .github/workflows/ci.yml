@@ -27,13 +27,9 @@ jobs:
       - name: Verify toy mechanics with system Python only
         run: python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v
 
-      - name: Verify core contract when implemented
-        shell: bash
-        run: |
-          if [[ -f src/neurosync/core.py ]]; then
-            test -f tests/test_core_transfer.py
-            PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
-          else
-            echo 'Core library is not yet on this branch; skipping its conditional suite.'
-          fi
+      - name: Verify strict Trek SGD fixture
+        run: python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
+
+      - name: Verify exact-base core contract
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
 
