@@ -27,7 +27,7 @@ The StateBus bridge is **model-agnostic at its message envelope**, not automatic
 
 The authoritative human-readable schema for this proposed version is **this section** (`docs/STATEBUS.md#envelope-v0-contract`). `statebus-v0` is a short protocol identifier, **not an invented resolvable URL or an installed JSON Schema**. Before machine validators claim conformance, persist a real versioned schema file and test it against both valid and adversarial fixtures.
 
-Every envelope uses canonical JSON (UTF-8; deterministic sorted keys; no NaN/Infinity, duplicate keys or implicit type coercion) with these typed fields:
+The **proposed cross-runtime wire profile** uses [RFC 8785 JSON Canonicalization Scheme (JCS)](https://www.rfc-editor.org/rfc/rfc8785.html), constrained to its valid I-JSON subset (no NaN/Infinity, duplicate object keys, malformed Unicode or implicit type coercion). JCS has specific ECMAScript-compatible number encoding and UTF-16-key sorting; ordinary Python `json.dumps(sort_keys=True)` is **not** automatically equivalent. This protocol does not claim implemented JCS conformance until cross-language golden vectors—including Unicode property ordering, numeric precision and negative-zero cases—pass in every producer/consumer. Source-local serialization may continue to use a narrower format and must **not** be mislabeled wire-interoperable. The envelope fields are:
 
 | Field | Required | Contract |
 | --- | --- | --- |
@@ -43,7 +43,7 @@ Every envelope uses canonical JSON (UTF-8; deterministic sorted keys; no NaN/Inf
 
 Size limits, allowed event types, time skew, sequence-gap window, pending TTL, retry budget and private payload handling must be specified by a **versioned implementation configuration** before network exposure. Unbounded buffers and silently truncating evidence are forbidden.
 
-**Hash and signature rules:** `event_sha256 = SHA256(canonical envelope bytes excluding event_sha256 and any transport framing)`. `payload_sha256` is computed over the canonical payload object, not pasted example text. Both are integrity aids, **not signatures**; anyone who can rewrite the event can recompute either. Independent signatures/secret management and trusted durable witness custody remain unimplemented in the baseline. No fake SHA examples or unverifiable transcript statistics belong in receipts.
+**Hash and signature rules:** on a **qualified JCS implementation**, `event_sha256 = SHA256(JCS envelope bytes excluding event_sha256 and transport framing)`. `payload_sha256` is computed over JCS payload bytes, not pasted example text. Until JCS cross-runtime tests pass, declare a distinct explicitly versioned local serialization profile and do not compare its digests as interoperable wire hashes. Both hashes are integrity aids, **not signatures**; anyone who can rewrite the event can recompute either. Independent signatures/secret management and trusted durable witness custody remain unimplemented in the baseline. No fake SHA examples or unverifiable transcript statistics belong in receipts.
 
 ### Event lifecycle
 
@@ -57,6 +57,8 @@ flowchart TD
 ```
 
 `PROPOSE` is inert. `VALIDATE` requires a **separate validator** checking an exact payload hash, source/artifact identity, grant, provenance, epoch/sequence and type-specific invariants. Producer `producer_claims` cannot contain an authoritative `verified: true` or `pass` flag; assertions are merely data. A separate **Attestation** record binds `verifier_id`, verifier method/version, observed subject hash, input hashes, `verified_evidence_class`, assertions executed, exact runner/process/exit status and outcome. A test receipt must pin source Git head, test binary/version, input split hashes, exact assertion, execution environment and observed exit code—not just “tests passed” or a meaningless count of parsed nodes.
+
+**Validator-capture adversary:** a model could supply both a malicious artifact and a trivial test program that exits `0`, then attach a plausible `TEST PASS` note. The independent validator must fetch and pin an **operator-approved exact test/policy hash** from outside the producer's control; producer-provided executables, assertions, fixtures and output text cannot authorize their own validation. No amount of model agreement upgrades a tautological passing test into a valid external attestation.
 
 `COMMIT` means **external StateBus custody** after authorization and an append that is durable against the declared failure model. Commit requires independent readback/witness. A model's own claims, a forged `host=true` string, or a single producer-controlled log cannot qualify. For `MEMORY_STATE`, `PLASTIC_STATE` and `IDENTITY_CLAIM`, **additional explicit promotion events and separate authority are required**; receiving `TRANSIENT_CONTEXT` or `FUNCTIONAL_STATE` never silently promotes it to long-term memory, personal identity, or weights. A committed message is still not necessarily *true*.
 
@@ -88,7 +90,7 @@ StateBus must not publish model weights, proprietary datasets, confidential prom
 
 ## Minimal qualification matrix
 
-1. **Schema/transport mechanics:** deterministic encode/decode/hash; duplicate-key and invalid-type refusal; proposal-only message has zero effects. No connection or exchange is proven by unit tests alone.
+1. **Schema/transport mechanics:** deterministic encode/decode/hash; duplicate-key and invalid-type refusal; cross-runtime JCS Unicode, negative-zero, decimal precision and property-ordering vectors; proposal-only message has zero effects. No connection or exchange is proven by unit tests alone.
 2. **Authority/recovery:** forged verification, replay/reorder, cross-session, expired/revoked grant, altered payload, previous-hash fork, malicious promotion, crash-between-append/ACK, stale tool capability and secret sentinel all rejected or safely recovered. Distinguish producer claims from independent validators.
 3. **Path C zero-weight:** fresh A/B sessions show *no-state*, *authorized state*, *stale/decoy state* controls. Query the same independently sealed task set; prove changed responses are attributable to delivered context **without** checkpoint change. Reopen session, read authorized external state under scope, and verify it is unavailable when revoked. This is mediation, not native memory.
 4. **Path A weight copy:** receiver-only fresh process after donor disconnect, exact B checkpoint hash/contents, rollback, base/schema mismatch, no-state/full-copy/shuffle controls. Compare capability against untouched B independently; numeric tensor match alone is not knowledge generalization.
