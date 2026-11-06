@@ -1,0 +1,33 @@
+# Python local state
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Credentials and host-specific settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Large/restricted model artifacts: record hashes and receipts instead.
+*.safetensors
+*.gguf
+*.ckpt
+*.pth
+*.pt
+checkpoints/
+models/
+outputs/
+
+# Evaluation oracles belong in a separate private custody location.
+sealed-oracle/
+private-oracle/
+heldout-private/
+
