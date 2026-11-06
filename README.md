@@ -2,6 +2,12 @@
 
 **Status: research proposal with committed, bounded toy experiments — not a working distributed LLM-synchronization runtime.** The current `main` contains [`experiments/toy-transfer/`](experiments/toy-transfer/README.md), with three isolated probes and tests; these are **source-level/mechanical experiments**, not a deployed synchronization service or evidence of LLM-to-LLM knowledge transfer.
 
+For an exact map of implemented files, proposed API, compatibility tiers, rights
+boundaries, and independent qualification requirements, read
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). The draft package metadata is
+for a **future** `src/neurosync/` small-library implementation; do not assume
+that import or installation works until the core PR is merged and tested.
+
 `neuro-sync` investigates whether two independently running models can **consensually transfer a learned capability** through compatible weight changes, target-native adapters, distillation, or activation communication. A successful transfer must leave the *recipient* measurably more capable **after the donor disconnects**. Merely exchanging messages, sharing an activation during one inference, or obtaining similar answers does not establish a persistent weight transfer.
 
 This project concerns **model-to-model transfer**, not human EEG or biological neural synchronization. “Synchronization,” “neural,” and “shared cognition” are research metaphors, not evidence of a common mind, consciousness, identity, or merged topology. Interacting models do **not** automatically expose their weights to one another: access to checkpoints, adapters, activations, or gradients must be explicitly engineered and authorized.
@@ -75,7 +81,15 @@ From `experiments/toy-transfer/`, the targeted test command is:
 python -m unittest -v test_adapter_transplant.py test_toy_factual_experiment.py test_neuro_sync_poc.py
 ```
 
-The experiment author's pre-merge local report was **16 tests: 10 passed, 6 PyTorch-dependent tests skipped** because `torch` was absent. That is a **local mechanics test report**, not fresh CI or VN2/Lappy readback, and not independent efficacy evidence. **This README-only PR does not modify or rerun those experiments.** See the [scoped README](experiments/toy-transfer/README.md) for each probe's commands and caveats.
+The experiment author's pre-merge local report was **16 tests: 10 passed, 6 PyTorch-dependent tests skipped** because `torch` was absent. That is a **local mechanics test report**, not fresh CI or VN2/Lappy readback, and not independent efficacy evidence. The historical README-only PR did not modify or rerun those experiments. See the [scoped README](experiments/toy-transfer/README.md) for each probe's commands and caveats.
+
+On the packaging branch, the root-level no-download equivalent is
+`python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v`.
+The optional PyTorch-dependent cases explicitly skip if `torch` is unavailable.
+The proposed CI runs this check on a standard public-repository GitHub runner
+without downloading model artifacts or installing optional dependencies. Green
+mechanics tests do **not** establish newly learned capabilities or distributed
+runtime readiness.
 
 ### Qualification gates before distributed execution
 
