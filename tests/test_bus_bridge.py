@@ -213,7 +213,8 @@ class ActualStateBusContractTests(unittest.TestCase):
         now = int(__import__("time").time())
         evidence = statebus.EvidenceBinding(
             artifact_sha256="a" * 64,
-            source_head_sha256="b" * 64,
+            source_git_commit_oid="sha1:" + "d" * 40,
+            source_tree_sha256="b" * 64,
             host_test_receipt_sha256="c" * 64,
             evidence_class=statebus.EvidenceClass.TEST,
         )
