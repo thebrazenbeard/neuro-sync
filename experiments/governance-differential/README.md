@@ -40,8 +40,11 @@ any unexpected outcome and prints a JSON receipt labeled
 remote runtime or model behavior.
 
 The broker's foreign-principal isolation probe is performed **before** the
-rightful principal consumes its grant. The rightful principal must then use
-that same grant successfully. Testing foreign denial *after* consumption
-would confound scope enforcement with an unrelated single-use/replay denial.
-The observation remains a same-process synthetic test, not authenticated
-principal isolation across operating-system identities.
+rightful principal first uses its grant. The rightful principal must then use
+that same grant successfully. Legacy grants in this test are **multi-use**;
+only invocation IDs have replay protection. The earlier probe order was less
+direct, but reuse of the grant alone did not create a replay false positive.
+An explicit negative-control test temporarily removes principal scoping and
+confirms the study detects unauthorized foreign execution. This remains a
+same-process synthetic test, not authenticated principal isolation across
+operating-system identities.
