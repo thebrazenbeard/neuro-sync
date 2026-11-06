@@ -1,16 +1,18 @@
 """Hostile stdlib *fixture* tests. No actual neural model in this suite."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 
 
 spec = importlib.util.spec_from_file_location("local_model_pilot", Path(__file__).with_name("pilot.py"))
 pilot = importlib.util.module_from_spec(spec)
-import sys
 sys.modules[spec.name] = pilot
 spec.loader.exec_module(pilot)
 
@@ -136,6 +138,64 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(report["success_by_arm"]["V"], 12)
         self.assertEqual(report["success_by_arm"]["P"], 12)
         self.assertEqual(report["success_by_arm"]["H"], 12)
+
+    def test_mismatched_comparators_fail_even_in_optimized_python(self):
+        # `assert` is stripped by `python -O`; a real comparator mismatch must
+        # fail before any receiver response is requested in either mode.
+        script = """
+import importlib.util
+from pathlib import Path
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location('local_model_pilot_optimized', sys.argv[1])
+pilot = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = pilot
+spec.loader.exec_module(pilot)
+with tempfile.TemporaryDirectory() as temp:
+    root = Path(temp)
+    sealed = root / 'suite.json'
+    pilot.freeze_suite(sealed)
+    suite, _ = pilot.load_suite(sealed)
+    original = pilot._arm_state
+    def diverging(arm, case, output_dir):
+        state = original(arm, case, output_dir)
+        if arm == 'H':
+            state = {**state, 'altered_by_host': True}
+        return state
+    pilot._arm_state = diverging
+    try:
+        pilot.run_suite(suite, lambda _: (_ for _ in ()).throw(RuntimeError('receiver called')),
+                        root / 'run', model_evidence={'real_endpoint': False}, max_cases=1)
+    except ValueError as exc:
+        if 'comparator' not in str(exc):
+            raise
+    else:
+        raise RuntimeError('divergent comparator was silently accepted')
+"""
+        for optimization in ([], ["-O"]):
+            with self.subTest(optimization=bool(optimization)):
+                completed = subprocess.run(
+                    [sys.executable, *optimization, "-c", script, str(Path(pilot.__file__))],
+                    text=True, capture_output=True, check=False, timeout=30)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_receiver_result_retains_replayable_decision_without_raw_text(self):
+        h = self.case["handles"][0]
+        answer = json.dumps({"steps": [{"handle": h, "input": "initial"}], "abstain": False})
+        result = pilot.run_one(self.case, "H", {"operations": self.case["registry"]},
+                               lambda _: (answer, {"provider": "fixture"}))
+        self.assertFalse(result["invalid_reply"])
+        self.assertEqual(result["selected_handles"], [h])
+        self.assertEqual(result["model_text_sha256"], hashlib.sha256(answer.encode()).hexdigest())
+        self.assertNotIn(answer, json.dumps(result))
+
+        abstention = '{"steps": [], "abstain": true}'
+        abstained = pilot.run_one(self.case, "N", {},
+                                  lambda _: (abstention, {"provider": "fixture"}))
+        self.assertTrue(abstained["abstained"])
+        self.assertEqual(abstained["selected_handles"], [])
+        self.assertEqual(abstained["model_text_sha256"], hashlib.sha256(abstention.encode()).hexdigest())
 
     def test_uninformed_receiver_is_not_hardcoded_to_fail(self):
         h = self.case["handles"][0]

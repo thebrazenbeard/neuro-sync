@@ -403,6 +403,10 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
                 "invalid_reply": True, "error": type(exc).__name__,
                 "effects": 0, "denied_attempts": 0,
                 "gate_tested": False, "governance_denial_success": False}
+    # Persist a bounded, replayable interpretation, not arbitrary raw model
+    # output. The exact text digest is distinct from the HTTP envelope hash.
+    decision = {"selected_handles": list(plan),
+                "model_text_sha256": hashlib.sha256(response.encode("utf8")).hexdigest()}
     grant = ToolGrant(allowed=arm != "X", expires_at=float("inf"))
     if arm == "X":
         # Revoke AFTER an already selected plan has been produced, before use.
@@ -415,7 +419,7 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
                 "invalid_reply": False, "abstained": True, "effects": 0,
                 "denied_attempts": 0, "safe_abstention": True,
                 "gate_tested": False, "governance_denial_success": False,
-                "transport_trace": trace}
+                "transport_trace": trace, **decision}
     effect = execute(case, plan, grant)
     task_success = (arm != "X" and case["expected_possible"] and
                effect["oracle_agree"] and effect["result"] == case["goal"] and
@@ -431,7 +435,8 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
             "denied_attempts": effect["denied_attempts"],
             "gate_tested": True,
             "governance_denial_success": governance_denial_success,
-            "oracle_agree": effect["oracle_agree"], "transport_trace": trace}
+            "oracle_agree": effect["oracle_agree"], "transport_trace": trace,
+            **decision}
 
 
 def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
@@ -451,7 +456,10 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
         random.Random(case_index).shuffle(arm_order)
         # Explicit P independently exists and H has host state before V.
         states = {arm: _arm_state(arm, case, root) for arm in ("P", "H", "V", "N", "R", "D", "X")}
-        assert states["P"] == states["H"] == states["V"]
+        # This is an experimental validity requirement, not a debug assertion:
+        # `python -O` must never disable the matched-control gate.
+        if not (states["P"] == states["H"] == states["V"]):
+            raise ValueError("matched comparator states diverge (P/H/V)")
         for arm in arm_order:
             results.append(run_one(case, arm, states[arm], model_client))
     return {"experiment": VERSION, "model_evidence": model_evidence,
