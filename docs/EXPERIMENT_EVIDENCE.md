@@ -14,7 +14,7 @@ Use different names for these different measured effects:
 | *Model-to-model contribution* | A extracts useful information that the broker, B, and public fixture could not directly provide; without A, equally scoped runs fail | Mere A→B message forwarding qualifies as learning |
 | *Weight-space retention* | B's checkpoint/adapter hash actually changes and B still performs better after a cold restart without external state | A tool/context result proves trained plasticity |
 
-An A-style marker in a mock JSON artifact is not an independent computational ability. A preinstalled host registry invoked through a retrieved key is a legitimate *reference-discovery* demonstration, not a learned model capability. The old source-only zero-weight pilot intentionally denies the no-state branch in code, so its success alone cannot measure generalization or the incremental value of StateBus over ordinary retrieval.
+An A-style marker in a mock JSON artifact is not an independent computational ability. A preinstalled host registry invoked through a retrieved key is a legitimate *reference-discovery* demonstration, not a learned model capability. The source-only zero-weight pilot intentionally denies the no-state branch in code, so its success alone cannot measure generalization or the incremental value of StateBus over ordinary retrieval. **No-state information isolation is also absent in the current fixture:** the B subprocess command receives both a broker-file path (whose contents include the selected reference) and the capability-registry path in every arm. `adversarial_receiver.py` demonstrates how an unrestricted script uses those same visible paths to solve the task without StateBus. This falsifies an information-isolation inference; it does not invalidate the narrower restricted-API gate test.
 
 ## Counterfactual evaluation matrix
 
@@ -38,7 +38,7 @@ Synthetic, scripted A/B adapters can test message serialization, per-session sco
 
 ### Executed wave-two synthetic counterfactual (not model inference)
 
-At the merged source checkpoint `c74cde653e042e7ed04879a32a5e0a57cfcb98fb`, the randomized scripted `causal_trial.py` seed-317 demonstration reported **no state 0/8**, **valid StateBus 8/8**, **the same reference in ordinary JSON 8/8**, **postcommit revoked 0/8** against held-out generated integer tasks. The B adapter artifact remained unchanged; an operator-direct reference baseline can also work without A. This supports mock external reference routing under the tested host fixture, not incremental StateBus inference power or model learning. The independent local consolidated test run against that exact source checkpoint reported **154 test cases: 148 passed, six optional PyTorch skipped**. CI at this documentation revision must be separately read back before making an Actions claim.
+At the merged source checkpoint `c74cde653e042e7ed04879a32a5e0a57cfcb98fb`, the randomized scripted `causal_trial.py` seed-317 demonstration reported **no state 0/8**, **valid StateBus 8/8**, **the same reference in ordinary JSON 8/8**, **postcommit revoked 0/8** against held-out generated integer tasks. These scores demonstrate deterministic reference gating within a restricted receiver, not causal model transfer. The B adapter artifact remained unchanged; an operator-direct reference baseline can also work without A. The matched file arm also reuses a broker grant initialized through `grant_via_bus`, so it is a comparison of *read routes*, not a completely independent no-bus setup. The adversarial path-access test separately probes the fact that no-state B is passed a broker path containing the answer-enabling reference; a script permitted to read it can recover correct results despite the original 0/8 gate. The source-only demo's eight integer inputs are repeated calls to one affine tool, not eight independent capability-transfer events. The earlier independent local consolidated test run against that exact historical source checkpoint reported **154 test cases: 148 passed, six optional PyTorch skipped**; those counts are not a receipt for later patches. CI at a new documentation revision must be separately read back before making an Actions claim.
 
 ### What a real-model qualification must demonstrate
 
@@ -61,6 +61,8 @@ Do **not** issue the last class when the proposer and its host callback control 
 
 - A **green CI run** promotes the exact tested mechanics only. It does not establish a model effect.
 - If V only differs from N because N is explicitly code-gated, report *reference-gated operation*, not learned capability.
+- If N receives a broker/registry path exposing the correct reference, do not call its 0-score a demonstration of information unavailability; test an unrestricted path-reading B counterfactual and repair the principal/file access boundary.
+- If P depends on a grant created through StateBus, call it a matched *read-route* comparison rather than a fully bus-independent control.
 - If P and V tie on task outcomes, look for genuine policy/replay/recovery benefits before claiming protocol value.
 - If H and V tie, A's unique contribution is **not established**.
 - If task answers or secret sentinel strings appear in the bus payload, logs, public CI, or prompts, the attribution/privacy test fails.

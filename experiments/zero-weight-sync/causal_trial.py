@@ -38,7 +38,8 @@ PROBES = (-7, 13, 29)
 MAX_BYTES = 8192
 SOURCE_FILES = tuple(dict.fromkeys((*pilot.SOURCE_FILES,
     "experiments/zero-weight-sync/causal_trial.py",
-    "experiments/zero-weight-sync/test_causal_trial.py")))
+    "experiments/zero-weight-sync/test_causal_trial.py",
+    "experiments/zero-weight-sync/adversarial_receiver.py")))
 
 
 def digest(obj: object) -> str:
@@ -258,6 +259,8 @@ def grant_via_bus(db: Path, broker: Path, scenario: Scenario, donor: Path,
     receipt = ValidationReceipt(
         version=1, validation_id=f"validated-{delta.event_id}",
         proposal_hash=delta.content_hash, evidence_sha256=evidence.sha256(),
+        # ValidationReceipt v1 requires this literal role string. It is an
+        # unenforced protocol label, NOT evidence of an independent principal.
         verifier_id="host-oracle", verifier_role="independent-verifier",
         decision="approve", evaluated_at_epoch=now,
     )
