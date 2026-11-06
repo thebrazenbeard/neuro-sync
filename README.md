@@ -86,3 +86,41 @@ with orchestrator.active_synapse():
     )
 
 ```
+---
+
+### Computational Mechanics & Mathematical Formulation
+
+To achieve a true "neurological" effect on model weights without explicit weight-space merging (which fails due to permutation symmetries and parameter divergence), `neuro-sync` operates on three coupled mathematical layers during the forward-backward pass.
+
+#### 1. Cross-Model Activation Projection
+
+Let Model $A$ and Model $B$ possess hidden state tensors at transformer layer $l$ defined as $h_A^{(l)} \in \mathbb{R}^{B \times S \times D_A}$ and $h_B^{(l)} \in \mathbb{R}^{B \times S \times D_B}$ respectively, where $B$ is batch size, $S$ is sequence length, and $D$ is hidden dimensionality.
+
+Because dimensions and latent spaces differ between independent architectures, we define a parameterized orthogonal projection matrix $P_{A \to B} \in \mathbb{R}^{D_A \times D_B}$ (constrained such that $P^T P = I$) to map Model $A$'s manifold into Model $B$'s reference frame:
+
+
+$$\tilde{h}_A^{(l)} = h_A^{(l)} P_{A \to B}$$
+
+During the forward pass, this projected activation is injected directly into Model $B$'s attention block via residual gating:
+
+
+$$h_B^{(l)} \leftarrow (1 - \alpha) h_B^{(l)} + \alpha \tilde{h}_A^{(l)}$$
+
+#### 2. Gradient Cross-Feeding & Loss Landscape Coupling
+
+The core of the "mind meld" occurs during backpropagation. Standard backprop computes gradients local to each model's independent loss $L_A$ and $L_B$. `neuro-sync` intercepts the backward pass to cross-feed gradients across the inter-process communication (IPC) boundary:
+
+$$\frac{\partial L_{\text{total}}}{\partial h_B^{(l)}} = \frac{\partial L_B}{\partial h_B^{(l)}} + \lambda \cdot P_{A \to B} \left( \frac{\partial L_A}{\partial h_A^{(l)}} \right)$$
+
+By injecting $\frac{\partial L_A}{\partial h_A^{(l)}}$ directly into Model $B$'s backward accumulation graph, Model $B$'s optimizer updates its parameters based on a joint gradient manifold. This forces both models' optimization trajectories to synchronize in real time.
+
+#### 3. Hebbian Plasticity & Homeostatic Clamping
+
+Unconstrained gradient cross-feeding across heterogeneous models inevitably causes gradient explosion or catastrophic forgetting. To enforce stability, parameter updates $\Delta W$ applied via shared memory-mapped LoRA adapters ($W = W_0 + \Delta W$, where $\Delta W = \frac{\alpha}{r} A B^T$) are governed by a modified Hebbian plasticity rule with homeostatic clamping:
+
+$$\Delta W_{t+1} = \eta \left( \nabla_W L_{\text{total}} \cdot \mathcal{H}(\sigma) \right) - \gamma W_t$$
+
+Where $\mathcal{H}(\sigma)$ is a homeostatic gating function that dampens updates when the cosine similarity between the models' internal hidden states falls below a critical threshold $\tau$:
+
+
+$$\mathcal{H}(\sigma) = \frac{2}{1 + e^{-k(\text{sim}(h_A, h_B) - \tau)}} - 1$$
