@@ -88,6 +88,19 @@ def _reject_number(value: str) -> Any:
     raise WireError("floating point/nonfinite JSON numbers are excluded")
 
 
+def _parse_integer(value: str) -> int:
+    # Check lexical length *before* int() to avoid Python's configurable
+    # 4300-digit conversion limit leaking an unexpected ValueError to callers.
+    # 16 decimal digits is the maximum length of a positive safe integer.
+    digits = value.removeprefix("-")
+    if len(digits) > 16:
+        raise WireError("integer exceeds portable safe length")
+    result = int(value)
+    if abs(result) > MAX_SAFE_INTEGER:
+        raise WireError("integer outside portable safe range")
+    return result
+
+
 def _strict_load(blob: bytes) -> Any:
     if not isinstance(blob, bytes):
         raise WireError("wire input must be exact bytes")
@@ -95,9 +108,9 @@ def _strict_load(blob: bytes) -> Any:
         raise WireError("wire byte length outside allowed bounds")
     try:
         raw = blob.decode("utf-8", errors="strict")
-        obj = json.loads(raw, object_pairs_hook=_unique_pairs,
+        obj = json.loads(raw, object_pairs_hook=_unique_pairs, parse_int=_parse_integer,
                          parse_float=_reject_number, parse_constant=_reject_number)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise WireError("invalid UTF-8 JSON") from exc
     _validate(obj)
     return obj
