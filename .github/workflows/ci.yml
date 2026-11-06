@@ -54,6 +54,9 @@ jobs:
       - name: Verify exact-plan effect authorization, rollback and single-use controls
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_plan_gate.py' -v
 
+      - name: Verify durable clock authority rollback and fail-closed controls
+        run: test -f tests/test_bus_clock_floor.py && PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_clock_floor.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 

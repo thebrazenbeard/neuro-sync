@@ -26,7 +26,10 @@ The fixture:
 4. Revokes an otherwise eligible grant **after** parsing the plan and verifies
    a denied use performs no handler effect. A grant expiring at the exact
    decision time is also denied; a reopened broker rejects replay and a
-   differently scoped context cannot inherit the grant.
+   differently scoped context cannot inherit the grant. The synthetic host
+   clock moves from 1000 to 1001 for the exact-expiry case and **remains at
+   1001** for later checks; it never rewinds. The reported
+   `synthetic_plan_clock_epochs` makes this fixture invariant testable.
 5. Attempts a **different one of the 13 handles under the same state key**,
    a second invocation on a consumed single-use plan grant, and a changed
    host-asserted handler artifact. Each must be rejected before the handler.
@@ -62,7 +65,9 @@ independently recomputes the canonical digest and compares it to the receipt.
   routes through the legacy surface is not plan-bound by this fixture.
 - Host wall-clock rollback can undermine expiry if time is not provided by a
   suitably monotonic authority; single-use plans and revocation are separate
-  protections and do not establish trusted time.
+  protections and do not establish trusted time. The fixture's nondecreasing
+  clock is **not** a rollback-attack test; the dedicated authority-level clock
+  tests cover observed rollback, including process reopens.
 - Reopening a broker object against the same database is a persistence check
   **within one running process**, not a crash/restart or recovery qualification.
 - Only pure arithmetic effects are used. SQLite does not guarantee rollback
