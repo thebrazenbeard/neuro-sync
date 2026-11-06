@@ -137,8 +137,27 @@ def decode_canonical(blob: bytes) -> Any:
 @dataclass(frozen=True)
 class WireFrame:
     kind: str
-    payload: Any
+    _wire_bytes: bytes
     sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self._wire_bytes) is not bytes:
+            raise WireError("frame bytes must be immutable built-in bytes")
+        if self.sha256 != hashlib.sha256(self._wire_bytes).hexdigest():
+            raise WireError("frame digest does not match its stored bytes")
+        value = decode_canonical(self._wire_bytes)
+        if (not isinstance(value, dict)
+                or set(value) != {"wire_profile", "kind", "payload"}
+                or value["wire_profile"] != WIRE_PROFILE
+                or not isinstance(self.kind, str)
+                or not _KIND.fullmatch(self.kind)
+                or value["kind"] != self.kind):
+            raise WireError("frame metadata does not match stored bytes")
+
+    @property
+    def payload(self) -> Any:
+        """A fresh parsed copy; mutation cannot desynchronize this frame's hash."""
+        return decode_canonical(self._wire_bytes)["payload"]
 
 
 def encode_frame(kind: str, payload: Any) -> bytes:
@@ -159,4 +178,4 @@ def decode_frame(blob: bytes, *, expected_kind: str | None = None) -> WireFrame:
         raise WireError("invalid frame kind")
     if expected_kind is not None and kind != expected_kind:
         raise WireError("unexpected frame kind")
-    return WireFrame(kind, obj["payload"], hashlib.sha256(blob).hexdigest())
+    return WireFrame(kind, blob, hashlib.sha256(blob).hexdigest())
