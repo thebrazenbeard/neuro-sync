@@ -114,6 +114,22 @@ class WireProfileTests(unittest.TestCase):
             self.assertRaises(WireError, canonical_bytes, value)
         self.assertRaises(WireError, decode_canonical, '{"v":1}')  # bytes only
 
+    def test_custom_mapping_or_sequence_subclass_cannot_lie_to_validator(self):
+        class MisleadingDict(dict):
+            def items(self):
+                return iter([("safe", 1)])
+
+        # Do not assume that validation iteration and a JSON encoder's view
+        # of a mutable/custom container are equivalent.
+        self.assertRaises(WireError, canonical_bytes,
+                          MisleadingDict({"credential": "unvalidated"}))
+        self.assertRaises(WireError, canonical_bytes, [MisleadingDict({"value": 1})])
+
+        class MutableList(list):
+            pass
+
+        self.assertRaises(WireError, canonical_bytes, MutableList([1]))
+
     def test_unicode_value_spelling_preserved_not_normalized(self):
         precomposed = canonical_bytes({"text": "é"})
         decomposed = canonical_bytes({"text": "e\u0301"})
