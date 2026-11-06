@@ -46,8 +46,9 @@ authority. Host callbacks and tools run in the same local Python trust domain.
 for the original `run.py` pilot or a live language-model test. It generates 13
 randomly named affine tool handlers and an independently selected hidden target
 for each seed. Scripted A alone sees a task-independent three-point probe
-signature, actually evaluates candidates, and discovers the matching opaque
-reference. The synthetic host oracle checks A's observation against the hidden
+signature through a restricted `DonorView` with **no target reference**, actually
+evaluates candidates, and discovers the matching opaque reference. The synthetic
+host oracle separately checks A's observation against the hidden
 target before it can be committed to a scoped SQLite StateBus event. **Neither
 the target coefficients nor probe answers nor held-out tasks are placed in the
 StateBus payload.** After A disconnects, a fresh receiver-only Python process
@@ -69,8 +70,14 @@ These counts are **source-fixture expectations**, not claims for real models;
 run the exact committed Git revision and record actual stdout and CI receipts.
 Additional negative tests cover absent/forged A, wrong discovery/ref/corpus,
 expired state, session isolation, malformed tasks/registry, stale local grants,
-spoofed outputs and an operator-direct no-A baseline. Source and mock artifact
-SHA256 identities are checked; **there is no independent cryptographic witness**.
+spoofed outputs, type-confused validator/scorer claims, and an operator-direct
+no-A baseline. A **scoped causal source manifest** binds the new evaluator and
+exact checked-in test-policy bytes together with the original StateBus core;
+both must match `git show HEAD:<path>` before any local A-observation commit.
+Source and mock artifact SHA256 identities are checked; **there is no independent
+cryptographic witness or independently protected test policy**. The checked-in
+test can be replaced by anyone authorized to change the repository, so this is
+recoverable byte provenance, not a signed external validation standard.
 
 The original `run.py` fixture also now checks a separate, scoped, operator-owned
 `.use-grant-*.json` file **on every tool invocation**. Revoking/deleting it
