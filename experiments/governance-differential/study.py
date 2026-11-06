@@ -159,6 +159,19 @@ def _broker_controls(root: Path, arm: str) -> dict[str, Any]:
 
     owner = broker()
     owner.grant("live", KEY, expires_at_epoch=2000)
+
+    # Probe foreign-principal isolation BEFORE the first use consumes the
+    # grant. Otherwise even a broker lacking principal isolation could appear
+    # to block the foreign caller solely because the grant was already spent.
+    foreign = broker(HostBoundContext("other-principal", TARGET, SESSION))
+    try:
+        foreign.execute("live", "foreign", KEY)
+        scope_blocked = False
+    except ReadAccessDenied:
+        scope_blocked = True
+
+    # The rightful owner must still be able to use the grant. This also
+    # shows the foreign denial was not caused by spending the grant first.
     result, receipt = owner.execute("live", "first", KEY)
     allowed = result == {"sum": 5} and receipt["status"] == "ok"
 
@@ -185,19 +198,13 @@ def _broker_controls(root: Path, arm: str) -> dict[str, Any]:
         expired_blocked = True
     now[0] = 1000.0
 
-    foreign = broker(HostBoundContext("other-principal", TARGET, SESSION))
-    try:
-        foreign.execute("live", "foreign", KEY)
-        scope_blocked = False
-    except ReadAccessDenied:
-        scope_blocked = True
-
     return {
         "allowed": allowed,
         "replay_blocked_after_reopen": replay_blocked,
         "revoked_blocked": revoked_blocked,
         "expired_blocked": expired_blocked,
         "foreign_context_blocked": scope_blocked,
+        "owner_succeeded_after_foreign_probe": allowed,
         "handler_effect_count": len(effects),
         "receipt_status": receipt["status"],
         "receipt_binding": receipt["artifact_binding_kind"],
@@ -282,6 +289,7 @@ def run() -> dict[str, Any]:
         "allowed": True, "replay_blocked_after_reopen": True,
         "revoked_blocked": True, "expired_blocked": True,
         "foreign_context_blocked": True, "handler_effect_count": 1,
+        "owner_succeeded_after_foreign_probe": True,
         "receipt_status": "ok", "receipt_binding": "host_asserted_unverified",
         "consumed_record_survived_reopen": True,
     }
