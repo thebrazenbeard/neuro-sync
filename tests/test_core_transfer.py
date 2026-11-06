@@ -137,15 +137,45 @@ class TransferTests(unittest.TestCase):
         wrong_shape = DeltaBundle(
             self.bundle.manifest,
             (("encoder.weight", Tensor.from_nested([0.1, 0.2, 0.3, 0.4])),),
+            self.bundle.targets,
         )
         with self.assertRaises(ValueError):
             apply_delta_bundle(self.b, wrong_shape, self.export, self.importer, now_epoch=1500)
         changed = DeltaBundle(
             self.bundle.manifest,
             (("encoder.weight", Tensor.from_nested([[0.2, 0.0], [0.0, 0.25]])),),
+            self.bundle.targets,
         )
         with self.assertRaisesRegex(ValueError, "manifest hash"):
             apply_delta_bundle(self.b, changed, self.export, self.importer, now_epoch=1500)
+        wrong_target = DeltaBundle(
+            self.bundle.manifest, self.bundle.deltas,
+            (("encoder.weight", Tensor.from_nested([[0.5, 0.5], [0.75, 99.0]])),),
+        )
+        with self.assertRaisesRegex(ValueError, "absolute targets manifest hash"):
+            apply_delta_bundle(self.b, wrong_target, self.export, self.importer, now_epoch=1500)
+
+    def test_cancellation_adversary_full_strength_is_bit_exact(self):
+        donor_base = ModelSnapshot("A", "float-cancellation", "schema-v1",
+                                   (("w", Tensor.from_nested([1e20])),))
+        donor_trained = ModelSnapshot("A", "float-cancellation", "schema-v1",
+                                      (("w", Tensor.from_nested([1.0])),))
+        receiver = ModelSnapshot("B", "float-cancellation", "schema-v1",
+                                 (("w", Tensor.from_nested([1e20])),))
+        bundle = build_delta_bundle(donor_base, donor_trained, receiver_id="B", transfer_id="t-cancel")
+        common = dict(
+            transfer_id="t-cancel", base_fingerprint=receiver.fingerprint(),
+            manifest_sha256=bundle.manifest.sha256(), allowed_tensors=("w",),
+            valid_from_epoch=1000, expires_epoch=2000,
+        )
+        export = ScopedGrant(actor_id="A", counterpart_id="B", operation="export-delta", **common)
+        importer = ScopedGrant(actor_id="B", counterpart_id="A", operation="import-delta", **common)
+        result, _ = apply_delta_bundle(receiver, bundle, export, importer,
+                                       now_epoch=1500, strength=1.0)
+        self.assertEqual(result.tensor_map()["w"].values, (1.0,))
+        self.assertEqual(result.fingerprint(),
+                         ModelSnapshot("B", "float-cancellation", "schema-v1",
+                                       donor_trained.tensors).fingerprint())
 
     def test_rollback_rejects_receiver_drift_and_wrong_receipt(self):
         result, receipt = self.apply()

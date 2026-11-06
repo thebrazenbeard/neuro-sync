@@ -128,6 +128,7 @@ class DeltaManifest:
     architecture_id: str
     schema_id: str
     delta_hashes: tuple[tuple[str, str], ...]
+    target_hashes: tuple[tuple[str, str], ...]
 
     def __post_init__(self) -> None:
         if self.version != SCHEMA_VERSION:
@@ -138,11 +139,15 @@ class DeltaManifest:
         )):
             raise ValueError("manifest identities and fingerprints are required")
         hashes = tuple(self.delta_hashes)
+        targets = tuple(self.target_hashes)
         if not hashes or any(not isinstance(x, tuple) or len(x) != 2 for x in hashes):
             raise ValueError("manifest needs named delta hashes")
         if len({name for name, _ in hashes}) != len(hashes):
             raise ValueError("duplicate manifest delta name")
+        if sorted(name for name, _ in hashes) != sorted(name for name, _ in targets):
+            raise ValueError("target tensor hashes must match delta names")
         object.__setattr__(self, "delta_hashes", tuple(sorted(hashes)))
+        object.__setattr__(self, "target_hashes", tuple(sorted(targets)))
 
     def sha256(self) -> str:
         return _hash_json({
@@ -152,6 +157,7 @@ class DeltaManifest:
             "architecture_id": self.architecture_id,
             "schema_id": self.schema_id,
             "delta_hashes": self.delta_hashes,
+            "target_hashes": self.target_hashes,
         })
 
 
@@ -159,6 +165,7 @@ class DeltaManifest:
 class DeltaBundle:
     manifest: DeltaManifest
     deltas: tuple[tuple[str, Tensor], ...]
+    targets: tuple[tuple[str, Tensor], ...]
 
     def __post_init__(self) -> None:
         records = tuple(self.deltas)
@@ -169,7 +176,16 @@ class DeltaBundle:
         if any(not isinstance(name, str) or not isinstance(tensor, Tensor)
                for name, tensor in records):
             raise ValueError("invalid delta tensor")
+        targets = tuple(self.targets)
+        if len({name for name, _ in targets}) != len(targets):
+            raise ValueError("duplicate absolute target tensor name")
+        if sorted(name for name, _ in targets) != sorted(name for name, _ in records):
+            raise ValueError("absolute targets must match delta names")
+        if any(not isinstance(name, str) or not isinstance(tensor, Tensor)
+               for name, tensor in targets):
+            raise ValueError("invalid absolute target tensor")
         object.__setattr__(self, "deltas", tuple(sorted(records)))
+        object.__setattr__(self, "targets", tuple(sorted(targets)))
 
 
 @dataclass(frozen=True)
@@ -247,10 +263,12 @@ def build_delta_bundle(
     if before.keys() != after.keys() or any(before[name].shape != after[name].shape for name in before):
         raise ValueError("donor tensor names/shapes changed")
     changes: list[tuple[str, Tensor]] = []
+    targets: list[tuple[str, Tensor]] = []
     for name in before:
         old, new = before[name], after[name]
         if old.values != new.values:
             changes.append((name, Tensor(old.shape, tuple(b - a for a, b in zip(old.values, new.values)))))
+            targets.append((name, Tensor(new.shape, tuple(new.values))))
     if not changes:
         raise ValueError("donor has no weight changes")
     manifest = DeltaManifest(
@@ -260,8 +278,9 @@ def build_delta_bundle(
         architecture_id=donor_base.architecture_id,
         schema_id=donor_base.schema_id,
         delta_hashes=tuple((name, tensor.sha256()) for name, tensor in changes),
+        target_hashes=tuple((name, tensor.sha256()) for name, tensor in targets),
     )
-    return DeltaBundle(manifest, tuple(changes))
+    return DeltaBundle(manifest, tuple(changes), tuple(targets))
 
 
 def _check_grant(
@@ -308,20 +327,33 @@ def apply_delta_bundle(
     hashes = tuple(sorted((name, tensor.sha256()) for name, tensor in bundle.deltas))
     if hashes != m.delta_hashes:
         raise ValueError("delta bundle manifest hash mismatch")
+    target_hashes = tuple(sorted((name, tensor.sha256()) for name, tensor in bundle.targets))
+    if target_hashes != m.target_hashes:
+        raise ValueError("absolute targets manifest hash mismatch")
     if any(name not in receiver_map or receiver_map[name].shape != tensor.shape
            for name, tensor in bundle.deltas):
         raise ValueError("delta tensor name/shape mismatch")
+    if any(name not in receiver_map or receiver_map[name].shape != tensor.shape
+           for name, tensor in bundle.targets):
+        raise ValueError("absolute target tensor name/shape mismatch")
     _check_grant(export_grant, actor=m.donor_id, counterpart=m.receiver_id,
                  operation="export-delta", bundle=bundle, now_epoch=now)
     _check_grant(import_grant, actor=m.receiver_id, counterpart=m.donor_id,
                  operation="import-delta", bundle=bundle, now_epoch=now)
 
     changed = dict(bundle.deltas)
+    targets = dict(bundle.targets)
     copied: list[tuple[str, Tensor]] = []
     for name, original in receiver.tensors:
         if name in changed:
-            values = tuple(base + lam * shift for base, shift in
-                           zip(original.values, changed[name].values))
+            # Floating subtraction can lose the exact trained value (e.g.
+            # 1e20 -> 1.0). Full-strength transplant therefore copies the
+            # separately hashed absolute target, not base + rounded delta.
+            if lam == 1.0:
+                values = targets[name].values
+            else:
+                values = tuple(base + lam * shift for base, shift in
+                               zip(original.values, changed[name].values))
             copied.append((name, Tensor(original.shape, values)))
         else:
             copied.append((name, Tensor(original.shape, tuple(original.values))))
