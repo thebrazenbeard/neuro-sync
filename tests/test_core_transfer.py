@@ -1,6 +1,7 @@
 """Stdlib tests for exact-base transfer and rollback (no model dependencies)."""
 
 from dataclasses import replace
+import json
 import os
 import subprocess
 import sys
@@ -302,6 +303,21 @@ class TransferTests(unittest.TestCase):
         boolean_version = encoded.replace('"version":1', '"version":true')
         with self.assertRaisesRegex(ValueError, "unsupported snapshot version"):
             snapshot_from_json(boolean_version)
+
+    def test_snapshot_import_rejects_nonstandard_constants_and_missing_tensors(self):
+        encoded = snapshot_to_json(make_snapshot("receiver-B"))
+        for invalid_literal in ("NaN", "Infinity", "-Infinity"):
+            with self.subTest(literal=invalid_literal):
+                # RFC 8259 excludes all three, including in otherwise ignored
+                # extension fields that a different decoder could interpret.
+                malformed = encoded[:-1] + ',"unknown_ext":' + invalid_literal + '}'
+                with self.assertRaisesRegex(ValueError, "nonstandard JSON numeric constant"):
+                    snapshot_from_json(malformed)
+
+        missing = json.loads(encoded)
+        del missing["tensors"]
+        with self.assertRaisesRegex(ValueError, "malformed snapshot tensor list"):
+            snapshot_from_json(json.dumps(missing))
 
     def test_no_changes_and_mismatched_donor_structure(self):
         with self.assertRaisesRegex(ValueError, "no weight changes"):
