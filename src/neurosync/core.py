@@ -444,13 +444,21 @@ def snapshot_from_json(encoded: str) -> ModelSnapshot:
             result[key] = value
         return result
 
-    decoded = json.loads(encoded, object_pairs_hook=unique_object_keys)
+    def reject_nonstandard_constant(value: str) -> object:
+        # Python accepts NaN/Infinity by default; these are not JSON numbers
+        # under RFC 8259 and create cross-decoder disagreement.
+        raise ValueError("nonstandard JSON numeric constant")
+
+    decoded = json.loads(encoded, object_pairs_hook=unique_object_keys,
+                         parse_constant=reject_nonstandard_constant)
     # `True == 1` in Python, but a JSON boolean is not an integer protocol
     # version. Reject ambiguous cross-language snapshots before constructing.
     if (not isinstance(decoded, dict) or
             type(decoded.get("version")) is not int or
             decoded["version"] != SCHEMA_VERSION):
         raise ValueError("unsupported snapshot version")
+    if not isinstance(decoded.get("tensors"), list):
+        raise ValueError("malformed snapshot tensor list")
     records = []
     for item in decoded["tensors"]:
         if not isinstance(item, dict) or not isinstance(item.get("values_hex"), list):
