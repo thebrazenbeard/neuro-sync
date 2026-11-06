@@ -20,8 +20,10 @@ exact Git head for later changes.
 | `src/neurosync/core.py`, `src/neurosync/__init__.py` | **Merged in #3**, stdlib | Exact-base tensor-delta extraction, bounded transfer, typed receipt, rollback; no authenticated rights or real model adapters |
 | `tests/test_core_transfer.py` | **Merged in #3**, stdlib | Adversarial core mechanics, numeric-integrity checks, no real-model effect |
 | `tests/test_core_trek_integration.py` | **Merged in #7**, stdlib | Five cross-component tests: train A via Trek TinyLearner, map its parameters into exact-base core snapshot, transfer, subprocess-score B; still same taught symbolic queries |
-| `docs/STATEBUS.md` | **Proposed protocol/source specification**, not an installed bus | Path C zero-weight external state, separate A/B training and weight changes; no ChatGPT native hooks or authenticated host witness |
-| Network transport, VN2/Lappy execution, shared optimizer, model checkpoints | **Absent** | No runtime or host qualification claim |
+| `docs/STATEBUS.md` | **Proposed higher-level wire/trust protocol**, not installed | Path C source contract; JCS and independent witness not implemented |
+| `src/neurosync/bus/{schema.py,ledger.py,__init__.py}` + `tests/test_bus_core.py` | **Merged #9**, source/local SQLite mechanics; metadata integrity follow-up **#11** | Typed StateDelta, session-scoped revision/PROPOSE→VALIDATE→local COMMIT, not external verified authority |
+| `src/neurosync/bus/bridge.py` + `tests/test_bus_bridge.py` | **Merged #10**, source tests | User/tool-mediated JSON import/export and bounded opt-in loopback client; not installed ChatGPT MCP or Qwen connection |
+| Deployed remote transport, VN2/Lappy execution, shared optimizer, production model checkpoints | **Absent** | Source loopback client does not prove any live host or distributed runtime |
 
 The historical `core/`, `hooks/`, `mesh/`, and `runtime/` sketch named paths that
 never existed. An `mmap` file is not network-distributed weight synchronization.
@@ -76,7 +78,7 @@ The [StateBus v0 proposal](STATEBUS.md) is a distinct **Path C zero-weight** sta
 
 Immediately available *in principle* is client-mediated export/import of bounded messages. Official OpenAI docs also describe an **optional installed custom MCP server** using Server URL or Secure MCP Tunnel, subject to actual install/auth and cost gate; it is tool access, not hidden token-stream or weight hooks. An optional qualified local model endpoint likewise requires fresh host, exact model, RAM/workload and permission checks. Do not infer an active plugin, loopback server, private Blotter bus, local Qwen spare capacity, remote consensus or zero-cost tunnel from documents. A full secure tunnel may require Platform credentials and billable usage; no paid path is authorized here.
 
-**Evidence ceiling:** the current protocol text is a proposal; source-level StateDelta/StateLedger code, when separately merged, must be reviewed on its own API and tests. PROPOSE → VALIDATE → COMMIT requires an independent validator and external durable witness for a protocol-level commit. A method called StateLedger.commit() that merely appends locally is **LOCAL_APPEND_UNWITNESSED** until separately attested. Typed claimed_evidence_class and model-provided sender/surface names have no independent authority; neither do caller-minted fixture grants. Transient functional context must never be auto-promoted to memory, plasticity or identity.
+**Evidence ceiling:** the higher-level wire/trust protocol remains proposed; the merged StateDelta/StateLedger and bridge have source-level tests only, with no authenticated external witness or host deployment. PROPOSE → VALIDATE → COMMIT requires an independent validator and external durable witness for a protocol-level commit. A method called StateLedger.commit() that merely appends locally is **LOCAL_APPEND_UNWITNESSED** until separately attested. Typed claimed_evidence_class and model-provided sender/surface names have no independent authority; neither do caller-minted fixture grants. Transient functional context must never be auto-promoted to memory, plasticity or identity.
 
 Qualification compares **(A) B with no bus/no state**, **(B) B with read-only authorized StateBus context but unchanged weights**, and **(C) B with changed, hashed recipient weights cold-restarted while bus disconnected**. Add stale/decoy/replay, secret-sentinel, cross-session, capability-revocation and fork tests. A result limited to B is context mediation, not neural transfer. A 50-turn, Qwen3.5-35B or fully native integration claim requires independent actual runtime receipts; none is established by these docs.
 
@@ -173,10 +175,12 @@ The Trek source's local commands are
 Both run a tiny structured learner and evaluate B in a fresh Python subprocess;
 neither trains or transfers between actual LLMs or accesses a remote donor.
 
-For the committed stdlib core:
+For the committed stdlib core and StateBus source:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_core.py' -v
+PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_bridge.py' -v
 PYTHONPATH=src python3 -c 'from neurosync import Tensor, ModelSnapshot, build_delta_bundle, apply_delta_bundle, rollback_transfer; print(Tensor.from_nested([[1.0, 2.0]]).shape)'
 ```
 
