@@ -48,5 +48,11 @@ jobs:
       - name: Verify host-bound read and use gate mechanics
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_read_gate.py' -v
 
+      - name: Verify durable use-time authority and replay protection
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_effect_gate.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
+
+      - name: Verify bounded real-receiver pilot fixtures (no model call)
+        run: python3 -m unittest discover -s experiments/real-model-sync -p 'test_*.py' -v
