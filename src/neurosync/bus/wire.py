@@ -47,26 +47,26 @@ def _text(value: str) -> None:
 def _validate(value: Any, depth: int = 0) -> None:
     if depth > MAX_DEPTH:
         raise WireError("maximum nesting depth exceeded")
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
         return
-    if isinstance(value, str):
+    if type(value) is str:
         _text(value)
         return
     if type(value) is int:
         if abs(value) > MAX_SAFE_INTEGER:
             raise WireError("integer outside portable 53-bit safe range")
         return
-    if isinstance(value, list):
+    if type(value) is list:
         if len(value) > MAX_COLLECTION:
             raise WireError("array is too long")
         for item in value:
             _validate(item, depth + 1)
         return
-    if isinstance(value, dict):
+    if type(value) is dict:
         if len(value) > MAX_COLLECTION:
             raise WireError("object has too many keys")
         for key, item in value.items():
-            if not isinstance(key, str) or not _KEY.fullmatch(key) or key in _UNSAFE_JS_KEYS:
+            if type(key) is not str or not _KEY.fullmatch(key) or key in _UNSAFE_JS_KEYS:
                 raise WireError("nonportable or unsafe JSON object key")
             _validate(item, depth + 1)
         return
