@@ -16,6 +16,7 @@ def main():
     if not isinstance(queries, list) or any(not isinstance(x, list) or len(x) != 2 for x in queries):
         raise ValueError("queries must be [subject, relation] pairs")
     print(json.dumps({"checkpoint_sha256": sha256(checkpoint),
+                      "query_sha256": sha256(queries),
                       "predictions": [model.predict(*pair) for pair in queries]}, sort_keys=True))
 
 

@@ -1,12 +1,16 @@
 """No-network, no-dependency tests for the actual-SGD categorical pilot."""
 
 import copy
+import json
 import math
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from fixtures import SYNTHETIC_FACTS, TREK_FACTS
-from learner import TinyLearner, delta_into_exact_base, train
-from run import experiment
+from learner import TinyLearner, delta_into_exact_base, sha256, train
+from run import evaluate_in_new_process, experiment
 
 
 class LearnerTests(unittest.TestCase):
@@ -220,6 +224,43 @@ class ExperimentalControlsTests(unittest.TestCase):
         self.assertEqual(noncanon["facts_source_types"], ["synthetic_noncanon"])
         self.assertEqual(noncanon["evals_after_donor_removed"]["C1_full_donor_copy"]["correct"],
                          len(SYNTHETIC_FACTS))
+
+
+class ReceiverTranscriptIntegrityTests(unittest.TestCase):
+    def setUp(self):
+        self.receiver = TinyLearner([f.subject for f in TREK_FACTS],
+                                    [f.relation for f in TREK_FACTS],
+                                    [f.answer for f in TREK_FACTS], seed=11)
+        self.queries = [[f.subject, f.relation] for f in TREK_FACTS]
+
+    def test_real_receiver_returns_bound_query_transcript(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            result = evaluate_in_new_process(self.receiver, TREK_FACTS, workspace)
+        self.assertEqual(result["query_sha256"], sha256(self.queries))
+        self.assertEqual(result["total"], len(TREK_FACTS))
+        self.assertEqual(len(result["predictions"]), result["total"])
+
+    def test_evaluator_rejects_malformed_or_unbound_subprocess_predictions(self):
+        valid = {
+            "checkpoint_sha256": self.receiver.digest(),
+            "query_sha256": sha256(self.queries),
+            "predictions": [self.receiver.predict(*pair) for pair in self.queries],
+        }
+        failures = {
+            "missing_query_digest": {key: value for key, value in valid.items() if key != "query_sha256"},
+            "stale_query_digest": {**valid, "query_sha256": sha256(self.queries[::-1])},
+            "missing_prediction": {**valid, "predictions": valid["predictions"][:-1]},
+            "extra_prediction": {**valid, "predictions": valid["predictions"] + ["JANEWAY"]},
+            "string_instead_of_list": {**valid, "predictions": "JANEWAY"},
+            "unknown_answer_symbol": {**valid, "predictions": ["NOT_IN_RECEIVER_VOCABULARY"] * len(TREK_FACTS)},
+        }
+        for name, invalid in failures.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as workspace:
+                fake = subprocess.CompletedProcess(args=["predictor.py"], returncode=0,
+                                                   stdout=json.dumps(invalid), stderr="")
+                with patch("run.subprocess.run", return_value=fake):
+                    with self.assertRaises((AssertionError, ValueError, KeyError)):
+                        evaluate_in_new_process(self.receiver, TREK_FACTS, workspace)
 
 
 if __name__ == "__main__":
