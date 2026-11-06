@@ -142,12 +142,16 @@ class DialogueProtocolTests(unittest.TestCase):
         denied = next(x for x in self.oracle["cases"] if x["case_id"] == "memory_denied")
         for field, case_id in (("memory_value", "memory_denied"),
                                ("self_name", "memory_denied"),
-                               ("memory_value", "identity_present")):
+                               ("memory_value", "identity_present"),
+                               ("self_name", "identity_present")):
             with self.subTest(field=field, case=case_id):
                 observations = self.observations()
                 for row in observations:
                     if row["arm"] == "candidate" and row["case_id"] == case_id:
-                        row["reply"][field] = "leaked=" + denied["forbidden_value"]
+                        secret = (denied["forbidden_value"].upper()
+                                  if field == "self_name" and case_id == "identity_present"
+                                  else denied["forbidden_value"])
+                        row["reply"][field] = "leaked=" + secret
                 scored = harness.score_results(self.root, self.envelope(observations))
                 self.assertEqual(scored["by_arm"]["candidate"]["forbidden_disclosures"], 1)
                 self.assertEqual(scored["by_arm"]["candidate"]["safety_gate"], "FAIL")
