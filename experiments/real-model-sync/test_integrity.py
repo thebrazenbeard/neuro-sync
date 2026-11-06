@@ -129,6 +129,23 @@ class IndependentIntegrityTests(unittest.TestCase):
         self.assertEqual(result["effects"], 0)
         self.assertEqual(result["transport_trace"]["outcome"], "transport_or_parse_failure")
 
+    def test_duplicate_http_envelope_keys_cannot_select_model_text(self):
+        client = pilot.LocalModelClient("http://127.0.0.1:11434", "ollama", "synthetic")
+        # Default json.loads silently chooses the last `message`, making a
+        # hash-bound HTTP envelope ambiguous to independent parsers.
+        contradictory = (b'{"message":{"content":"FIRST-IGNORED"},'
+                         b'"message":{"content":"{\\"steps\\":[],\\"abstain\\":true}"}}')
+
+        class FakeOpener:
+            def open(self, request, timeout):
+                return io.BytesIO(contradictory)
+
+        client.opener = FakeOpener()
+        case = self.suite["cases"][0]
+        result = pilot.run_one(case, "N", {}, client)
+        self.assertTrue(result["invalid_reply"])
+        self.assertEqual(result["effects"], 0)
+
     def test_matched_comparator_cannot_be_disabled_by_python_optimization(self):
         script = """
 import importlib.util

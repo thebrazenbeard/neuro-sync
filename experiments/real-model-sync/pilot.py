@@ -273,17 +273,19 @@ def model_request(case: dict, state: dict) -> dict:
     }
 
 
-def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool]:
-    def reject_duplicate_keys(pairs):
-        obj = {}
-        for key, value in pairs:
-            if key in obj:
-                raise ValueError("duplicate plan JSON key")
-            obj[key] = value
-        return obj
+def reject_duplicate_json_keys(pairs):
+    """Prevent last-key-wins ambiguity in both model text and HTTP envelope."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key] = value
+    return obj
 
+
+def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool]:
     try:
-        obj = json.loads(raw_text, object_pairs_hook=reject_duplicate_keys)
+        obj = json.loads(raw_text, object_pairs_hook=reject_duplicate_json_keys)
     except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError("model did not return a JSON object") from exc
     if type(obj) is not dict or set(obj) != {"steps", "abstain"} or type(obj["abstain"]) is not bool:
@@ -430,7 +432,7 @@ class LocalModelClient:
                 raw = response.read(1_000_001)
             if len(raw) > 1_000_000:
                 raise ValueError("model reply too large")
-            parsed = json.loads(raw)
+            parsed = json.loads(raw, object_pairs_hook=reject_duplicate_json_keys)
             if self.backend == "ollama":
                 answer = parsed["message"]["content"]
             else:

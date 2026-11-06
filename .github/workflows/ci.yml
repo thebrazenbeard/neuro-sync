@@ -59,3 +59,9 @@ jobs:
 
       - name: Verify three-arm governance differential (no model call)
         run: python3 -m unittest discover -s experiments/governance-differential -p 'test_*.py' -v
+
+      - name: Verify tiny recipient-retention transfer falsifiers (no model call)
+        run: python3 -m unittest discover -s experiments/transfer-falsifiers -p 'test_*.py' -v
+
+      - name: Verify scenario-unit statistics and malformed receipt controls
+        run: python3 -m unittest discover -s experiments/real-model-sync/statistics -p 'test_*.py' -v
