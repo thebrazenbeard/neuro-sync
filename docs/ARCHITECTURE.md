@@ -154,7 +154,7 @@ The Trek source's local commands are
 Both run a tiny structured learner and evaluate B in a fresh Python subprocess;
 neither trains or transfers between actual LLMs or accesses a remote donor.
 
-After the separately proposed stdlib core implementation is merged:
+For the committed stdlib core:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
@@ -165,6 +165,8 @@ The toy projection's six tests skip explicitly when `torch` is absent.
 GitHub Actions CI uses only a **standard free runner while the repository is
 public**, read-only checkout, the interpreter shipped on that runner, and
 source-level unittest checks; it neither installs PyTorch nor downloads
-model weights. No CI result qualifies real-model performance, donor-disconnected
-cross-process persistence, host readiness, or distributed transfer.
+model weights. The Trek fixture does exercise recipient-only **subprocess**
+readback after removing the donor. No CI result qualifies donor-disconnected
+**real-LLM** persistence, novel factual generalization, host readiness, or
+distributed transfer.
 

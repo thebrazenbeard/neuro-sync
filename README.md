@@ -90,7 +90,7 @@ From the repository root, the no-download test commands are
 `python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v`
 and `python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v`.
 The optional PyTorch-dependent cases explicitly skip if `torch` is unavailable.
-The proposed CI runs both checks on a standard public-repository GitHub runner
+The proposed CI runs these and the exact-base core suite on a standard public-repository GitHub runner
 without downloading model artifacts or installing optional dependencies. Green
 mechanics tests do **not** establish newly learned capabilities or distributed
 runtime readiness.
