@@ -10,6 +10,7 @@ from .ledger import (
     AuthorizationError, ConflictError, SequenceError,
     ExpiredError, LedgerIntegrityError,
 )
+from .effect_gate import ApprovedEffect, EffectAttemptFailed, HostOwnedEffectBroker
 
 __all__ = [
     "SCHEMA_VERSION", "MAX_PAYLOAD_BYTES", "MAX_ENVELOPE_BYTES",
@@ -17,4 +18,5 @@ __all__ = [
     "ValidationReceipt", "canonical_json", "StateLedger", "ProposalReceipt",
     "CommitReceipt", "CommittedEvent", "AuthorizationError", "ConflictError",
     "SequenceError", "ExpiredError", "LedgerIntegrityError",
+    "ApprovedEffect", "EffectAttemptFailed", "HostOwnedEffectBroker",
 ]
