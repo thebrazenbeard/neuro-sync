@@ -36,10 +36,35 @@ STATE_KEY = "capabilities.affine"
 POLICY = "affine-routing-v1"
 PROBES = (-7, 13, 29)
 MAX_BYTES = 8192
+SOURCE_FILES = tuple(dict.fromkeys((*pilot.SOURCE_FILES,
+    "experiments/zero-weight-sync/causal_trial.py",
+    "experiments/zero-weight-sync/test_causal_trial.py")))
 
 
 def digest(obj: object) -> str:
     return hashlib.sha256(canonical_json(obj).encode("utf8")).hexdigest()
+
+
+def source_manifest_sha256() -> str:
+    """Scoped source digest INCLUDING this evaluator and its test policy."""
+    return digest({path: pilot.canonical_file(pilot.REPO / path)
+                   for path in SOURCE_FILES})
+
+
+def checked_source_head(head: str) -> str:
+    """Reject fake OIDs and any uncommitted causal implementation/test bytes.
+
+    The committed test file is a policy *fixture*, not an independent test
+    authority. A malicious repository committer can still change both code
+    and tests; a signed external approved policy is outside this experiment.
+    """
+    head = pilot.trusted_source_head(head)
+    for path in SOURCE_FILES:
+        data = subprocess.run(["git", "show", f"{head}:{path}"],
+                              cwd=pilot.REPO, capture_output=True, check=True).stdout
+        if data != (pilot.REPO / path).read_bytes():
+            raise ValueError("causal source/policy differs from committed Git HEAD: " + path)
+    return head
 
 
 def bounded_json(path: Path) -> object:
@@ -198,15 +223,25 @@ def grant_via_bus(db: Path, broker: Path, scenario: Scenario, donor: Path,
     The broker sidecar is local test authority, not a signature or production
     access-control store. Revocation is checked by B at *every use*.
     """
-    source_head = pilot.trusted_source_head(source_head)
+    source_head = checked_source_head(source_head)
     if not host_validate_discovery(scenario, observation, donor):
         raise PermissionError("no valid A observation")
     value = capability_value(observation, valid_until)
+    manifest = source_manifest_sha256()
+    host_probe_receipt = {
+        "checked_source_git_oid": "sha1:" + source_head,
+        "causal_source_manifest_sha256": manifest,
+        "test_policy_file_sha256": pilot.canonical_file(
+            pilot.REPO / "experiments/zero-weight-sync/test_causal_trial.py"),
+        "A_observation_sha256": digest(observation),
+        "oracle_check_passed": True,
+        "checker": "scripted-affine-host-oracle-v2",
+    }
     evidence = EvidenceBinding(
         artifact_sha256=pilot.canonical_file(donor),
         source_git_commit_oid="sha1:" + source_head,
-        source_tree_sha256=pilot.source_manifest_sha256(),
-        host_test_receipt_sha256=digest(observation),
+        source_tree_sha256=manifest,
+        host_test_receipt_sha256=digest(host_probe_receipt),
         evidence_class=EvidenceClass.TEST,
     )
     delta = StateDelta.create(
@@ -358,7 +393,7 @@ def demo(seed: int = 317) -> dict:
         obs = a_discover(a, scenario.donor_view())
         now = int(time.time())
         chosen = grant_via_bus(db, broker, scenario, a,
-                               pilot.trusted_source_head(None), "causal", "shared-runtime",
+                               checked_source_head(pilot.trusted_source_head(None)), "causal", "shared-runtime",
                                observation=obs, now=now, valid_until=now + 300)
         write_json(plain, chosen)
         tasks = scenario.heldout(8)
@@ -382,7 +417,8 @@ def demo(seed: int = 317) -> dict:
                 "unchanged_B_artifact": original == pilot.canonical_file(b),
                 "task_blind_bus": set(chosen) == {
                     "ref", "valid_until", "catalog_sha256", "donor_artifact_sha256", "policy"},
-                "source_git_commit_oid": "sha1:" + pilot.trusted_source_head(None)}
+                "source_git_commit_oid": "sha1:" + pilot.trusted_source_head(None),
+                "causal_source_manifest_sha256": source_manifest_sha256()}
 
 
 def main() -> None:
