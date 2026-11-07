@@ -116,6 +116,12 @@ when or by whom it was published**. An operator rewriting both a plan and its
 own untrusted precommit is not a valid blind experiment; external custody is
 an additional independent requirement.
 
+Python API callers must supply the **original private plan bytes** to
+`evaluate(plan_bytes, observations, plan_sha256=precommitted_digest)`. The
+scorer verifies their exact SHA-256 before parsing and consulting any answer
+oracle. Passing a mutable plan dictionary is rejected; recomputing a digest
+from canonicalized JSON would not bind the originally committed file bytes.
+
 For the offline regression suite:
 
 ```
