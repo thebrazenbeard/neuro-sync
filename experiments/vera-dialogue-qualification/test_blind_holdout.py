@@ -51,9 +51,10 @@ class BlindHoldoutTests(unittest.TestCase):
         self.assertEqual({path.name for path in self.private_root.iterdir()},
                          {"oracle.json", "commitment.key"})
         manifest, schedule = holdout.read_public(self.public_root)
-        self.assertEqual(len(schedule), 6)
+        self.assertEqual(len(schedule), 9)
         self.assertEqual(manifest["independent_custody"], "UNVERIFIED")
-        self.assertEqual({row["arm"] for row in schedule}, {"untouched", "candidate"})
+        self.assertEqual({row["arm"] for row in schedule},
+                         {"untouched", "candidate", "shuffled_control"})
         original = holdout._read_json
         with mock.patch.object(holdout, "_read_json",
                                side_effect=lambda path: (
@@ -81,10 +82,12 @@ class BlindHoldoutTests(unittest.TestCase):
         holdout.seal(self.public_root, self.private_root, self.casebook)
         envelope = self.complete_observations()
         for item in envelope["observations"]:
-            if item["arm"] == "untouched":
+            if item["arm"] in ("untouched", "shuffled_control"):
                 item["reply"]["self_name"] = "UNKNOWN"
         result = holdout.score(self.public_root, self.private_root, envelope)
         self.assertEqual(result["paired_behavior"]["candidate_only_correct"], 3)
+        self.assertEqual(result["paired_behavior"]["candidate_only_vs_both_controls"], 3)
+        self.assertEqual(result["paired_behavior"]["shuffled_control_correct"], 0)
         self.assertEqual(result["paired_behavior"]["both_correct"], 0)
         self.assertFalse(result["trained_identity_proven"])
         self.assertFalse(result["causal_weight_learning_proven"])
@@ -132,6 +135,31 @@ class BlindHoldoutTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unbound evaluator oracle"):
             holdout.read_private(self.public_root, self.private_root)
 
+    def test_all_three_arms_require_identical_requests_and_case_kind(self):
+        for mutation in ("request", "kind"):
+            with self.subTest(mutation=mutation):
+                trial_public = self.base / f"matched_{mutation}"
+                trial_private = self.base / f"oracle_{mutation}"
+                holdout.seal(trial_public, trial_private, self.casebook)
+                requests_path = trial_public / "requests.json"
+                public = json.loads(requests_path.read_text())
+                case_rows = [row for row in public["rows"]
+                             if row["case_id"] == "identity_cold"]
+                self.assertEqual(len(case_rows), 3)
+                third = case_rows[2]
+                if mutation == "request":
+                    third["request"]["user_message"] += " tampered-only-third-arm"
+                    third["request_sha256"] = holdout.digest(third["request"])
+                else:
+                    third["kind"] = "denied_memory"
+                requests_path.write_text(holdout.canonical(public))
+                manifest_path = trial_public / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                manifest["requests_sha256"] = holdout.digest(public)
+                manifest_path.write_text(holdout.canonical(manifest))
+                with self.assertRaisesRegex(ValueError, "unmatched holdout arms"):
+                    holdout.read_public(trial_public)
+
     def test_operator_can_emit_public_only_schedule_via_cli(self):
         input_path = self.base / "evaluator_casebook.json"
         input_path.write_text(json.dumps(self.casebook))
@@ -145,7 +173,7 @@ class BlindHoldoutTests(unittest.TestCase):
                                    "--public-root", str(self.public_root)],
                                   capture_output=True, text=True, check=True)
         model_facing = receiver.stdout
-        self.assertEqual(len(json.loads(model_facing)["rows"]), 6)
+        self.assertEqual(len(json.loads(model_facing)["rows"]), 9)
         self.assertNotIn(self.secret_identity, model_facing)
         self.assertNotIn(self.secret_memory, model_facing)
 

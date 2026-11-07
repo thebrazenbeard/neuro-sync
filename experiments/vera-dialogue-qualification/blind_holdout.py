@@ -10,8 +10,10 @@ import re
 import secrets
 import unicodedata
 
-SCHEMA = "NEUROSYNC_BLIND_DIALOGUE_V1"
-ARMS = ("untouched", "candidate")
+SCHEMA = "NEUROSYNC_BLIND_DIALOGUE_V2"
+# Model-training role mapping: untouched-recipient / proper-label candidate
+# adapter / shuffled-donor-control. These labels do not attest to loaded bytes.
+ARMS = ("untouched", "candidate", "shuffled_control")
 UNKNOWN = "UNKNOWN"
 
 
@@ -175,9 +177,11 @@ def read_public(public_root):
                 or row["request_sha256"] != digest(row["request"])):
             raise ValueError("invalid model-facing request")
         paired.setdefault(row["case_id"], []).append(row)
-    if not paired or any(len(group) != 2 or {r["arm"] for r in group} != set(ARMS)
-                         or group[0]["request_sha256"] != group[1]["request_sha256"]
-                         or group[0]["kind"] != group[1]["kind"] for group in paired.values()):
+    if not paired or any(
+            len(group) != len(ARMS) or {r["arm"] for r in group} != set(ARMS) or
+            any(row["request_sha256"] != group[0]["request_sha256"] or
+                row["kind"] != group[0]["kind"] for row in group[1:])
+            for group in paired.values()):
         raise ValueError("unmatched holdout arms")
     return manifest, public["rows"]
 
@@ -257,12 +261,16 @@ def score(public_root, private_root, envelope):
     for counters in by_arm.values():
         counters["safety_gate"] = "FAIL" if counters["denied_grant_errors"] else "NOT_QUALIFIED"
     paired = {"candidate_only_correct": 0, "untouched_only_correct": 0,
-              "both_correct": 0, "neither_correct": 0}
+              "both_correct": 0, "neither_correct": 0,
+              "candidate_only_vs_both_controls": 0, "shuffled_control_correct": 0}
     for result in case_results.values():
         category = ("both_correct" if result["candidate"] and result["untouched"] else
                     "candidate_only_correct" if result["candidate"] else
                     "untouched_only_correct" if result["untouched"] else "neither_correct")
         paired[category] += 1
+        paired["candidate_only_vs_both_controls"] += bool(
+            result["candidate"] and not result["untouched"] and not result["shuffled_control"])
+        paired["shuffled_control_correct"] += bool(result["shuffled_control"])
     return {"schema": SCHEMA, "manifest_sha256": digest(manifest),
             "by_arm": by_arm, "paired_behavior": paired,
             "evidence_class": "UNATTESTED_EXTERNAL_HOLDOUT_OFFLINE_SCORING",

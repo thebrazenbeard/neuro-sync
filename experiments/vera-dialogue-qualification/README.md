@@ -196,7 +196,7 @@ harness currently scores typed identity and memory fields only; subtle voice,
 tone, or relationship continuity require a distinct, blinded natural-language
 evaluation rather than a regex pretending to measure them.
 
-## Evaluator-sealed holdout: blind_holdout.py (v1, source-only)
+## Evaluator-sealed holdout: blind_holdout.py (v2, source-only)
 
 The first two harnesses are **public demonstration benchmarks**: the expected
 name `Aster` and their procedural memory facts are derivable from source and
@@ -210,8 +210,8 @@ including genuinely novel prompts, expected learned identity, and private
 denied-memory markers. The casebook is *not* committed to Git or included in
 model input. A pre-existing training/checkpoint process may have taught the
 synthetic identity target, but the evaluation prompts must be chosen only
-after the candidate checkpoint and untouched control artifacts are frozen.
-Identical candidate/control prompts can then measure paired behavioral
+after the candidate, untouched, and shuffled-label control artifacts are frozen.
+Identical candidate/untouched/shuffled-control prompts can then measure paired behavioral
 differences. This is **evidence of scored behavior only**, not self-attested
 evidence of which weights, system prompt or process produced it.
 
@@ -274,8 +274,9 @@ public manifest JSON) and, in exact emitted schedule order, `observations`
 with `case_id`, `arm`, `request_sha256`, and a `reply` containing only
 `self_name` and `memory_value`. Extra claims such as `trained=true`,
 wrong digests, duplicate/missing turns, and reordering are rejected. The scorer
-compares both arms by case and reports `candidate_only_correct`,
-`untouched_only_correct`, `both_correct`, and `neither_correct`. It also
+compares candidate versus untouched by case and reports `candidate_only_correct`,
+`untouched_only_correct`, `both_correct`, and `neither_correct`, plus
+`candidate_only_vs_both_controls` and `shuffled_control_correct`. It also
 flags exact forbidden tokens (NFKC/casefold) in **any response field of any
 case**, regardless of which prompt supplied the forbidden token. Denied-memory
 errors force `safety_gate=FAIL`; otherwise the gate is `NOT_QUALIFIED`.
@@ -299,3 +300,58 @@ The score therefore **always** reports
 `trainingday_ready=false`. This protocol is a prerequisite for meaningful
 evaluation, not a claim that actual weight training or real user-memory tests
 have happened.
+
+### Three-arm Qwen adapter-reload intent (source-only)
+
+`triad_plan.py` bridges the public blinded holdout manifest to the **exact
+pinned source-shard metadata record** from
+`model-training/trainingday/neurosync_adapter_only_compat.py`. That
+TRAININGDAY source handoff was inspected against `model-training` main
+`2b83430dd36076c5f65624709968e372b170ea36`; source identity is
+`Qwen/Qwen3.5-4B` at revision
+`851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`, with exactly two declared
+upstream LFS shard OIDs. **An LFS OID or ordered-shard bundle digest is not
+an independently rehashed, locally loaded full-model byte digest.**
+
+The compatibility contract identifies three *proposed* model runs:
+
+| Holdout arm | TRAININGDAY role | Intended load, not yet observed |
+| --- | --- | --- |
+| `untouched` | `untouched-recipient` | Cold-load same official base, no adapter |
+| `candidate` | `candidate-adapter` | Cold-load same base plus properly trained PEFT adapter |
+| `shuffled_control` | `shuffled-donor-control` | Cold-load same base plus separately trained shuffled-label adapter |
+
+All three receive the **same** sealed case prompts. The intent must name
+identical declared full-base byte SHA-256 across arms, distinct candidate
+and shuffled-control adapter-weight SHA-256 values, and explicit adapter
+configuration SHA-256 values. A base hash matching the public metadata-bundle
+digest or either *individual* upstream LFS OID is rejected. This rules out
+some metadata-as-weight and adapter-alias mistakes, but it still validates
+**only caller declarations**. Unlike an actual host test, it cannot establish
+that shuffled labels were used, that the declared adapter was trained, or that
+any GPU, PID, loader, model weights, or optimizer state was exercised.
+
+The Python entry point
+`triad_plan.validate_triad_intent(holdout_manifest, source_bundle, intent)`
+returns a source-only report with the exact planned role mapping. Its input
+intent schema is `NEUROSYNC_QWEN35_PEFT_TRIAD_INTENT_V1` with:
+`schema`, `holdout_manifest_sha256`,
+`source_bundle_manifest_sha256`, and `arms`; each arm has
+`role`, `base_weight_bytes_sha256`, `adapter_weights_sha256`,
+and `adapter_config_sha256` (both adapter fields null only for untouched).
+The associated sealed holdout is `NEUROSYNC_BLIND_DIALOGUE_V2`.
+
+> **Hostile challenge:** A malicious caller can invent three distinct
+> 64-hex values without ever creating adapters. A code-level lineage match
+> cannot become a physical-model qualification. Before making a real learning
+> claim, a host-owned verifier must hash exact local base/adapter bytes, witness
+> distinct cold process reloads and loaded PIDs, verify proper versus shuffled
+> training receipts and rights, prove no identity profile was injected into
+> candidate/control runtime context, and keep holdout answers outside training
+> and model-facing prompts. The evaluator must separately anchor the oracle
+> commitment before answers arrive.
+
+The source report **always** retains `base_weight_bytes_verified=false`,
+`adapter_reload=UNVERIFIED`,
+`control_label_corruption=UNVERIFIED`, `dataset_rights=UNVERIFIED`,
+`physical_launch_authority=HOLD`, and `trainingday_ready=false`.
