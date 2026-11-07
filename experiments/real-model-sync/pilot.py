@@ -332,6 +332,41 @@ def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool
     return tuple(selected), False
 
 
+# The parser owns these literal messages. Never persist arbitrary exception
+# text (which could contain model output) as a diagnostic category.
+PLAN_REJECTION_CATEGORY = {
+    "model did not return a JSON object": "JSON_SYNTAX",
+    "invalid plan envelope": "ENVELOPE",
+    "invalid plan steps": "STEPS",
+    "abstention cannot include effects": "STEPS",
+    "non-abstention requires a plan": "STEPS",
+    "invalid handle or dependency": "HANDLE_DEPENDENCY",
+}
+
+
+def _safe_failure_trace(trace: dict) -> dict:
+    """Allowlist field *and value*, preventing forged free-form trace leakage."""
+    result = {}
+    for key, value in trace.items():
+        if key in ("prompt_sha256", "shared_state_sha256", "response_sha256"):
+            if (type(value) is str and len(value) == 64 and
+                    all(ch in "0123456789abcdef" for ch in value)):
+                result[key] = value
+        elif key == "request_bytes" and type(value) is int and 0 < value <= 100_000:
+            result[key] = value
+        elif key == "max_tokens" and type(value) is int and MIN_REPLY_TOKENS <= value <= MAX_REPLY_TOKENS:
+            result[key] = value
+        elif key == "timeout_seconds" and type(value) in (int, float) and 0 < value <= 60:
+            result[key] = value
+        elif key == "latency_ms" and type(value) in (int, float) and 0 <= value <= 61_000:
+            result[key] = value
+        elif key == "prompt_profile" and value in ("compact", "legacy"):
+            result[key] = value
+        elif key == "outcome" and value in ("received_text", "transport_or_parse_failure"):
+            result[key] = value
+    return result
+
+
 @dataclass
 class ToolGrant:
     allowed: bool = True
@@ -486,10 +521,45 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
         return {**row, "request_shared_state_sha256": request_state_sha256}
 
     call_started = time.monotonic()
+    def failure(exc: Exception, stage: str, *, trace: dict | None = None,
+                model_text: str | None = None) -> dict:
+        # Do not serialize exception messages or returned text. The previous
+        # source silently discarded the received-text trace at parse failure.
+        row = {"case": case["id"], "arm": arm, "success": False,
+               "invalid_reply": True,
+               "error": (exc.reason if isinstance(exc, ModelCallError) and
+                         type(client) is LocalModelClient and exc.reason in {
+                             "TimeoutError", "ValueError", "TypeError", "KeyError",
+                             "IndexError", "OSError", "HTTPError", "URLError"}
+                         else type(exc).__name__),
+               "failure_stage": stage, "effects": 0, "denied_attempts": 0,
+               "model_call_elapsed_ms": round((time.monotonic() - call_started)*1000, 2),
+               "gate_tested": False, "governance_denial_success": False}
+        if stage == "MODEL_TEXT_PARSE":
+            row["parse_failure_category"] = PLAN_REJECTION_CATEGORY.get(
+                str(exc), "OTHER_PARSE_REJECTION")
+            if type(model_text) is str:
+                # Surrogatepass keeps even malformed decoded Unicode bounded
+                # to a deterministic digest instead of crashing the receipt.
+                raw = model_text.encode("utf8", errors="surrogatepass")
+                row["model_text_sha256"] = hashlib.sha256(raw).hexdigest()
+                row["model_text_bytes"] = len(raw)
+        if type(trace) is dict:
+            row["transport_trace"] = _safe_failure_trace(trace)
+        return with_request_binding(row)
+
     try:
         response, trace = client(req)
-        # Independent caller-side duration; never sourced from adapter metadata.
-        model_call_elapsed_ms = round((time.monotonic() - call_started) * 1000, 2)
+    except (ValueError, TypeError, KeyError, TimeoutError, OSError, IndexError) as exc:
+        # Includes LocalModelClient's bounded ModelCallError trace, distinct
+        # from a valid received text subsequently rejected by parse_plan.
+        adapter_trace = (exc.trace if isinstance(exc, ModelCallError) and
+                         type(client) is LocalModelClient else None)
+        return failure(exc, "ADAPTER_FAILURE", trace=adapter_trace)
+
+    # Independent caller-side duration; never sourced from adapter metadata.
+    model_call_elapsed_ms = round((time.monotonic() - call_started) * 1000, 2)
+    try:
         if type(trace) is not dict:
             raise ValueError("model adapter metadata must be a dictionary")
         # Adapter metadata is UNTRUSTED: it cannot overwrite host scores,
@@ -500,17 +570,20 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
         if any(type(v) not in (str, int, float, bool, type(None)) for v in trace.values()):
             raise ValueError("model adapter metadata must have primitive values")
         trace = json.loads(frozen_trace)
+        # A client that returned answer text cannot simultaneously declare a
+        # transport failure. Scripted fixtures may omit outcome, but an exact
+        # LocalModelClient must provide its received-text status.
+        if ("outcome" in trace and trace["outcome"] != "received_text") or (
+                type(client) is LocalModelClient and trace.get("outcome") != "received_text"):
+            raise ValueError("returned text conflicts with adapter outcome")
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        return failure(exc, "TRACE_VALIDATION")
+
+    try:
         plan, abstain = parse_plan(response, case["handles"])
     except (ValueError, TypeError, KeyError, TimeoutError, OSError, IndexError) as exc:
-        failure = {"case": case["id"], "arm": arm, "success": False,
-                "invalid_reply": True, "error": (exc.reason if isinstance(exc, ModelCallError)
-                                                  else type(exc).__name__),
-                "effects": 0, "denied_attempts": 0,
-                "model_call_elapsed_ms": round((time.monotonic() - call_started)*1000, 2),
-                "gate_tested": False, "governance_denial_success": False}
-        if isinstance(exc, ModelCallError) and type(client) is LocalModelClient:
-            failure["transport_trace"] = exc.trace
-        return with_request_binding(failure)
+        return failure(exc, "MODEL_TEXT_PARSE", trace=trace,
+                       model_text=response if type(response) is str else None)
     grant = ToolGrant(allowed=arm != "X", expires_at=float("inf"))
     if arm == "X":
         # Revoke AFTER an already selected plan has been produced, before use.

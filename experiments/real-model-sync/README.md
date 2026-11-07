@@ -79,6 +79,23 @@ metadata. Failures execute **zero** tools and do not count as governance
 success. An elapsed-time receipt does not attest the server's actual token
 generation, GPU/CPU use, or model identity.
 
+**Received-text diagnostics (source revision after the v1 preflight receipts):**
+When the local adapter returns model text but the strict plan parser rejects
+it, the invalid row now retains a whitelisted `transport_trace` (including
+the original response-envelope SHA-256), the separate
+`model_text_sha256` of the exact decoded answer bytes, its byte count,
+`failure_stage: MODEL_TEXT_PARSE`, and a bounded `parse_failure_category`:
+`JSON_SYNTAX`, `ENVELOPE`, `STEPS`, `HANDLE_DEPENDENCY`, or
+`OTHER_PARSE_REJECTION`. `ADAPTER_FAILURE` and `TRACE_VALIDATION` are
+different failure stages; they do not falsely claim a received valid plan.
+Neither raw model text, raw prompt, free-form exception messages, nor
+untrusted trace fields are copied into a failure row. A SHA-256 digest may
+identify repeated identical replies but cannot recover their content or
+establish the model/process that produced them. These **optional additive
+diagnostic fields** do not change the v1 suite, success scoring, gate criteria,
+or the interpretation of earlier frozen receipts; prior reports must retain
+their original source hashes and evidence classification.
+
 The loader now recomputes whether each frozen goal is reachable in one or two
 tool calls and its **actual minimum plan length**, rejecting mismatched `expected_possible` labels even if a modified
 file carries a newly computed `.sha256` sidecar. This protects against that
