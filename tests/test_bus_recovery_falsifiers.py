@@ -85,8 +85,8 @@ class RecoveryFalsifierTests(unittest.TestCase):
         self.assertEqual(receipt["status"], "ok")
         self.assertEqual(len(self.calls), 1)
 
-    def test_known_limitation_main_only_restore_replays_consumed_invocation(self):
-        """KNOWN LIMITATION: intact clock floor cannot prove consumption."""
+    def test_main_only_restore_replay_requires_a_consumption_journal(self):
+        """Legacy replay remains; #56's intact journal blocks this bounded path."""
         owner = self.broker()
         owner.grant_plan("once", KEY, plan=PLAN, expires_at_epoch=300)
         old_main = self.path.read_bytes()
@@ -104,6 +104,24 @@ class RecoveryFalsifierTests(unittest.TestCase):
         self.path.write_bytes(old_main)
         self.assertEqual(self.high_water(), retained_floor)
         self.clock[0] = 102
+        with sqlite3.connect(self.sidecar) as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(clock_state)")}
+            journal_enabled = "consumption_journal_ready" in columns
+            if journal_enabled:
+                marker = db.execute("SELECT consumption_journal_ready FROM clock_state "
+                                    "WHERE singleton=1").fetchone()
+                self.assertIsNotNone(marker)
+                self.assertEqual(marker[0], 1)
+                self.assertIsNotNone(db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='consumed_plan_grants'").fetchone())
+        if journal_enabled:
+            with self.assertRaisesRegex(ReadAccessDenied, "consumed"):
+                self.broker().execute_plan("once", "invoke", KEY, plan=PLAN)
+            self.assertEqual(len(self.calls), 1, "intact paired journal denied replay")
+            return
+        # Old main has only a clock floor and no consumed-plan sidecar journal:
+        # this historical exploit must remain executable, not silently skipped.
         second, second_receipt = self.broker().execute_plan(
             "once", "invoke", KEY, plan=PLAN
         )
