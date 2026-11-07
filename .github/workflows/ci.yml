@@ -54,11 +54,24 @@ jobs:
       - name: Verify exact-plan effect authorization, rollback and single-use controls
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_plan_gate.py' -v
 
+      - name: Verify durable clock authority rollback and fail-closed controls
+        run: test -f tests/test_bus_clock_floor.py && PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_clock_floor.py' -v
+
+      - name: Verify read-only recovery diagnostics and historical-restore falsifiers
+        run: |
+          test -f tests/test_bus_recovery_preflight.py
+          test -f tests/test_bus_recovery_falsifiers.py
+          PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_recovery_preflight.py' -v
+          PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_recovery_falsifiers.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 
       - name: Verify bounded real-receiver pilot fixtures (no model call)
         run: python3 -m unittest discover -s experiments/real-model-sync -p 'test_*.py' -v
+
+      - name: Verify reversible compact receiver catalog (offline, no model call)
+        run: PYTHONPATH=src python3 -m unittest discover -s experiments/real-model-sync/compact_catalog -p 'test_*.py' -v
 
       - name: Verify three-arm governance differential (no model call)
         run: python3 -m unittest discover -s experiments/governance-differential -p 'test_*.py' -v
