@@ -47,11 +47,16 @@ class PairPreflightTests(unittest.TestCase):
     def _mark_consumption_journal(self, *, ready=1, table=True):
         """Synthetic shape from Draft #56; not a trusted host witness."""
         with sqlite3.connect(self.sidecar) as db:
-            db.execute("ALTER TABLE clock_state ADD COLUMN "
-                       "consumption_journal_ready INTEGER NOT NULL DEFAULT 0")
+            columns = {row[1] for row in db.execute("PRAGMA table_info(clock_state)")}
+            if "consumption_journal_ready" not in columns:
+                db.execute("ALTER TABLE clock_state ADD COLUMN "
+                           "consumption_journal_ready INTEGER NOT NULL DEFAULT 0")
             db.execute("UPDATE clock_state SET consumption_journal_ready=? "
                        "WHERE singleton=1", (ready,))
-            if table:
+            if not table:
+                db.execute("DROP TABLE IF EXISTS consumed_plan_grants")
+            elif db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                            "AND name='consumed_plan_grants'").fetchone() is None:
                 db.execute("CREATE TABLE consumed_plan_grants ("
                            "principal TEXT NOT NULL,target TEXT NOT NULL,"
                            "session TEXT NOT NULL,grant_id TEXT NOT NULL,"
@@ -61,7 +66,11 @@ class PairPreflightTests(unittest.TestCase):
     def test_compatible_pair_is_not_claimed_fresh(self):
         report = inspect_clock_pair(self.path)
         self.assertEqual(report.classification, "STRUCTURALLY_COMPATIBLE_UNATTESTED")
-        self.assertEqual(report.consumption_journal_status, "LEGACY_UNCHECKED")
+        with sqlite3.connect(self.sidecar) as db:
+            marked = "consumption_journal_ready" in {
+                row[1] for row in db.execute("PRAGMA table_info(clock_state)")}
+        self.assertEqual(report.consumption_journal_status,
+                         "STRUCTURE_PRESENT_UNATTESTED" if marked else "LEGACY_UNCHECKED")
         self.assertEqual(report.authority_effect, "NO_INTENTIONAL_AUTHORITY_DB_WRITE")
         self.assertEqual(report.last_observed_epoch, 250.0)
         self.assertTrue(report.has_v2_grants)
@@ -100,6 +109,12 @@ class PairPreflightTests(unittest.TestCase):
 
     def test_unmarked_journal_table_fails_closed(self):
         with sqlite3.connect(self.sidecar) as db:
+            # New #56 brokers start with the marker and journal. Deliberately
+            # recreate the legacy ambiguous state without a production broker.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(clock_state)")}
+            if "consumption_journal_ready" in columns:
+                db.execute("ALTER TABLE clock_state DROP COLUMN consumption_journal_ready")
+            db.execute("DROP TABLE IF EXISTS consumed_plan_grants")
             db.execute("CREATE TABLE consumed_plan_grants ("
                        "principal TEXT,target TEXT,session TEXT,grant_id TEXT,"
                        "invocation_id TEXT)")
