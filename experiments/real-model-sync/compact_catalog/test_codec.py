@@ -25,7 +25,7 @@ def case_fixture() -> dict:
     handles = [f"cap-{i:016x}" for i in reversed(range(13))]
     return {"id": "case-00-00000000", "start": -3, "goal": 17,
             "handles": handles, "registry": dict(zip(handles, OPS)),
-            "expected_possible": True, "gold_length": 1}
+            "expected_possible": True, "oracle_minimum_steps": 1}
 
 
 def states(case: dict) -> dict[str, dict]:

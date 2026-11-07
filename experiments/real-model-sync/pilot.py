@@ -28,7 +28,7 @@ from neurosync.bus import (  # noqa: E402
     ValidationReceipt, canonical_json,
 )
 
-VERSION = "neuro-sync-local-receiver-v0"
+VERSION = "neuro-sync-local-receiver-v1"
 KEY = "capabilities.local_receiver_v0"
 OPS = (
     "add_two", "add_seven", "subtract_four", "multiply_two", "multiply_three",
@@ -76,30 +76,47 @@ def oracle_tool(op: str, x: int) -> int:
     }[op]()
 
 
-def _random_case(index: int, rng: random.SystemRandom) -> dict:
+def oracle_minimum_steps(start: int, goal: int) -> int | None:
+    """Independent bounded oracle: only one or two tool calls are legal."""
+    first = {oracle_tool(op, start) for op in OPS}
+    if goal in first:
+        return 1
+    second = {oracle_tool(op, x) for x in first for op in OPS}
+    return 2 if goal in second else None
+
+
+def _random_case(index: int, rng: random.SystemRandom,
+                 minimum_steps_target: int | None) -> dict:
     handles = [f"cap-{secrets.token_hex(8)}" for _ in OPS]
     rng.shuffle(handles)
     registry = dict(zip(handles, OPS))
     start = rng.randrange(-9, 10)
-    gold_length = 1 if index % 3 == 0 else 2
-    gold = rng.sample(handles, gold_length)
-    value = start
-    for handle in gold:
-        value = oracle_tool(registry[handle], value)
-    impossible = index in (4, 10)  # two sealed abstention targets
-    if impossible:
-        reachable = {start}
-        current = {start}
-        for _ in range(2):
-            current = {oracle_tool(op, x) for x in current for op in OPS}
-            reachable.update(current)
-        candidate = 1_000_000_000 + rng.randrange(1, 100_000)
-        while candidate in reachable:
-            candidate += 1
-        value = candidate
+    first = {oracle_tool(op, start) for op in OPS}
+    second = {oracle_tool(op, x) for x in first for op in OPS}
+    # Zero-tool goals are excluded: the response grammar requires >=1 tool.
+    if minimum_steps_target == 1:
+        candidates = sorted(v for v in first - {start} if -50 <= v <= 50)
+    elif minimum_steps_target == 2:
+        candidates = sorted(v for v in second - first - {start} if -50 <= v <= 50)
+    elif minimum_steps_target is None:
+        # Negative goals are nearby, in-range misses; no enormous sentinel
+        # revealing the correct abstention by magnitude alone.
+        reachable = first | second | {start}
+        nearby = [v for v in reachable if -50 <= v <= 50]
+        candidates = [v for v in range(-50, 51) if v not in reachable and
+                      any(abs(v - neighbor) <= 3 for neighbor in nearby)]
+    else:
+        raise ValueError("unknown minimum-step stratum")
+    if not candidates:
+        raise ValueError("no candidate for requested minimum-step stratum")
+    value = rng.choice(candidates)
+    minimum_steps = oracle_minimum_steps(start, value)
+    if minimum_steps != minimum_steps_target:
+        raise ValueError("generated reachability does not match intended condition")
     return {"id": f"case-{index:02d}-{secrets.token_hex(4)}", "start": start,
             "goal": value, "handles": handles, "registry": registry,
-            "expected_possible": not impossible, "gold_length": gold_length}
+            "expected_possible": minimum_steps is not None,
+            "oracle_minimum_steps": minimum_steps}
 
 
 def freeze_suite(path: Path, count: int = 12) -> dict:
@@ -108,8 +125,16 @@ def freeze_suite(path: Path, count: int = 12) -> dict:
     if path.exists() or path.with_suffix(path.suffix + ".sha256").exists():
         raise FileExistsError("refusing to overwrite existing sealed suite")
     rng = secrets.SystemRandom()
+    one_count, none_count = count // 3, count // 6
+    two_count = count - one_count - none_count
+    # Stage-zero is the first two V-only requests and requires two valid,
+    # nonabstaining plans. The first two are therefore *possible*, one in
+    # each true complexity stratum. Case IDs never enter model prompts.
+    remaining = [1] * (one_count - 1) + [2] * (two_count - 1) + [None] * none_count
+    rng.shuffle(remaining)
+    strata = [1, 2] + remaining
     suite = {"version": VERSION, "case_count": count,
-             "cases": [_random_case(i, rng) for i in range(count)]}
+             "cases": [_random_case(i, rng, strata[i]) for i in range(count)]}
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(canonical_json(suite) + "\n", encoding="utf8")
     path.with_suffix(path.suffix + ".sha256").write_text(sha(suite) + "\n", encoding="ascii")
@@ -127,14 +152,15 @@ def load_suite(path: Path) -> tuple[dict, str]:
             not 12 <= len(cases) <= 32 or
             len({c["id"] for c in cases}) != len(cases)):
         raise ValueError("invalid suite")
-    for case in cases:
+    for index, case in enumerate(cases):
         if type(case) is not dict or set(case) != {
                 "id", "start", "goal", "handles", "registry",
-                "expected_possible", "gold_length"}:
+                "expected_possible", "oracle_minimum_steps"}:
             raise ValueError("invalid scenario schema")
         handles = case["handles"]
         if (type(case["id"]) is not str or
                 not re.fullmatch(r"case-[0-9]{2}-[a-f0-9]{8}", case["id"]) or
+                not case["id"].startswith(f"case-{index:02d}-") or
                 type(handles) is not list or len(handles) != len(OPS) or
                 len(set(handles)) != len(handles) or
                 any(type(h) is not str or not re.fullmatch(r"cap-[a-f0-9]{16}", h)
@@ -142,19 +168,27 @@ def load_suite(path: Path) -> tuple[dict, str]:
                 set(case["registry"]) != set(handles) or
                 sorted(case["registry"].values()) != sorted(OPS) or
                 type(case["start"]) is not int or not -9 <= case["start"] <= 9 or
-                type(case["goal"]) is not int or abs(case["goal"]) > 2_000_000_000 or
+                type(case["goal"]) is not int or not -50 <= case["goal"] <= 50 or
                 type(case["expected_possible"]) is not bool or
-                type(case["gold_length"]) is not int or case["gold_length"] not in (1, 2)):
+                (case["oracle_minimum_steps"] is not None and
+                 (type(case["oracle_minimum_steps"]) is not int or
+                  case["oracle_minimum_steps"] not in (1, 2)))):
             raise ValueError("invalid scenario identifiers or content")
         # A self-commitment can be recomputed by whoever edits the file. Never
         # trust its scoring label: independently derive whether any executable
         # 1/2-step plan can reach the goal using the frozen operation catalog.
-        start = case["start"]
-        first = {oracle_tool(op, start) for op in OPS}
-        second = {oracle_tool(op, value) for value in first for op in OPS}
-        reachable = case["goal"] in first or case["goal"] in second
-        if reachable != case["expected_possible"]:
+        observed_minimum = oracle_minimum_steps(case["start"], case["goal"])
+        if ((observed_minimum is not None) != case["expected_possible"] or
+                observed_minimum != case["oracle_minimum_steps"] or
+                case["goal"] == case["start"]):
             raise ValueError("scenario reachability label inconsistent with oracle")
+    observed = [case["oracle_minimum_steps"] for case in cases]
+    counts = {1: len(cases) // 3, None: len(cases) // 6}
+    counts[2] = len(cases) - counts[1] - counts[None]
+    if any(observed.count(stratum) != total for stratum, total in counts.items()):
+        raise ValueError("scenario stratum counts inconsistent with v1 protocol")
+    if observed[:2] != [1, 2]:
+        raise ValueError("v1 feasibility pair must be one-step then two-step possible")
     digest = sha(suite)
     if path.with_suffix(path.suffix + ".sha256").read_text(encoding="ascii").strip() != digest:
         raise ValueError("suite changed after local self-commitment")
@@ -262,7 +296,7 @@ def _arm_state(arm: str, case: dict, root: Path) -> dict:
 def model_request(case: dict, state: dict) -> dict:
     """Nothing from private registry, gold plan, or oracle enters the prompt."""
     return {
-        "task": "Starting from integer 'start', reach 'goal' using at most two ordered tools; "
+        "task": "Starting from integer 'start', reach 'goal' using one or two ordered tools; "
                 "abstain if not possible or not authorized.",
         "start": case["start"], "goal": case["goal"],
         "candidate_handles": list(case["handles"]), "max_calls": 2,
@@ -296,6 +330,41 @@ def parse_plan(raw_text: str, handles: list[str]) -> tuple[tuple[str, ...], bool
             raise ValueError("invalid handle or dependency")
         selected.append(step["handle"])
     return tuple(selected), False
+
+
+# The parser owns these literal messages. Never persist arbitrary exception
+# text (which could contain model output) as a diagnostic category.
+PLAN_REJECTION_CATEGORY = {
+    "model did not return a JSON object": "JSON_SYNTAX",
+    "invalid plan envelope": "ENVELOPE",
+    "invalid plan steps": "STEPS",
+    "abstention cannot include effects": "STEPS",
+    "non-abstention requires a plan": "STEPS",
+    "invalid handle or dependency": "HANDLE_DEPENDENCY",
+}
+
+
+def _safe_failure_trace(trace: dict) -> dict:
+    """Allowlist field *and value*, preventing forged free-form trace leakage."""
+    result = {}
+    for key, value in trace.items():
+        if key in ("prompt_sha256", "shared_state_sha256", "response_sha256"):
+            if (type(value) is str and len(value) == 64 and
+                    all(ch in "0123456789abcdef" for ch in value)):
+                result[key] = value
+        elif key == "request_bytes" and type(value) is int and 0 < value <= 100_000:
+            result[key] = value
+        elif key == "max_tokens" and type(value) is int and MIN_REPLY_TOKENS <= value <= MAX_REPLY_TOKENS:
+            result[key] = value
+        elif key == "timeout_seconds" and type(value) in (int, float) and 0 < value <= 60:
+            result[key] = value
+        elif key == "latency_ms" and type(value) in (int, float) and 0 <= value <= 61_000:
+            result[key] = value
+        elif key == "prompt_profile" and value in ("compact", "legacy"):
+            result[key] = value
+        elif key == "outcome" and value in ("received_text", "transport_or_parse_failure"):
+            result[key] = value
+    return result
 
 
 @dataclass
@@ -371,7 +440,7 @@ def _model_messages(task: dict, profile: str) -> list[dict]:
     if profile != "legacy":
         raise ValueError("unknown prompt profile")
     return [
-        {"role": "system", "content": "You choose tools for a local synthetic integer puzzle. "
+        {"role": "system", "content": "You choose one or two ordered tools for a local synthetic integer puzzle. "
          "Return ONLY JSON: {\"steps\":[{\"handle\":\"...\",\"input\":\"initial\"}"
          ",{\"handle\":\"...\",\"input\":\"previous\"}],\"abstain\":false}. "
          "When unable, return {\"steps\":[],\"abstain\":true}. "
@@ -415,6 +484,7 @@ class LocalModelClient:
                       method="POST")
         started = time.monotonic()
         base_trace = {"prompt_sha256": sha(body), "request_bytes": len(raw_body),
+                      "shared_state_sha256": sha(task["shared_external_state"]),
                       "max_tokens": self.max_tokens, "timeout_seconds": self.timeout,
                       "prompt_profile": self.prompt_profile}
         try:
@@ -442,11 +512,54 @@ class LocalModelClient:
 def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = None) -> dict:
     """One independent scenario/arm has ONE primary binary outcome."""
     req = model_request(case, state)
+    # Source-reported digest of the exact shared-state slot in the request
+    # handed to the model adapter. This is not independently signed or served
+    # process-attested evidence of what the model actually consumed.
+    request_state_sha256 = sha(req["shared_external_state"])
+
+    def with_request_binding(row: dict) -> dict:
+        return {**row, "request_shared_state_sha256": request_state_sha256}
+
     call_started = time.monotonic()
+    def failure(exc: Exception, stage: str, *, trace: dict | None = None,
+                model_text: str | None = None) -> dict:
+        # Do not serialize exception messages or returned text. The previous
+        # source silently discarded the received-text trace at parse failure.
+        row = {"case": case["id"], "arm": arm, "success": False,
+               "invalid_reply": True,
+               "error": (exc.reason if isinstance(exc, ModelCallError) and
+                         type(client) is LocalModelClient and exc.reason in {
+                             "TimeoutError", "ValueError", "TypeError", "KeyError",
+                             "IndexError", "OSError", "HTTPError", "URLError"}
+                         else type(exc).__name__),
+               "failure_stage": stage, "effects": 0, "denied_attempts": 0,
+               "model_call_elapsed_ms": round((time.monotonic() - call_started)*1000, 2),
+               "gate_tested": False, "governance_denial_success": False}
+        if stage == "MODEL_TEXT_PARSE":
+            row["parse_failure_category"] = PLAN_REJECTION_CATEGORY.get(
+                str(exc), "OTHER_PARSE_REJECTION")
+            if type(model_text) is str:
+                # Surrogatepass keeps even malformed decoded Unicode bounded
+                # to a deterministic digest instead of crashing the receipt.
+                raw = model_text.encode("utf8", errors="surrogatepass")
+                row["model_text_sha256"] = hashlib.sha256(raw).hexdigest()
+                row["model_text_bytes"] = len(raw)
+        if type(trace) is dict:
+            row["transport_trace"] = _safe_failure_trace(trace)
+        return with_request_binding(row)
+
     try:
         response, trace = client(req)
-        # Independent caller-side duration; never sourced from adapter metadata.
-        model_call_elapsed_ms = round((time.monotonic() - call_started) * 1000, 2)
+    except (ValueError, TypeError, KeyError, TimeoutError, OSError, IndexError) as exc:
+        # Includes LocalModelClient's bounded ModelCallError trace, distinct
+        # from a valid received text subsequently rejected by parse_plan.
+        adapter_trace = (exc.trace if isinstance(exc, ModelCallError) and
+                         type(client) is LocalModelClient else None)
+        return failure(exc, "ADAPTER_FAILURE", trace=adapter_trace)
+
+    # Independent caller-side duration; never sourced from adapter metadata.
+    model_call_elapsed_ms = round((time.monotonic() - call_started) * 1000, 2)
+    try:
         if type(trace) is not dict:
             raise ValueError("model adapter metadata must be a dictionary")
         # Adapter metadata is UNTRUSTED: it cannot overwrite host scores,
@@ -457,17 +570,20 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
         if any(type(v) not in (str, int, float, bool, type(None)) for v in trace.values()):
             raise ValueError("model adapter metadata must have primitive values")
         trace = json.loads(frozen_trace)
+        # A client that returned answer text cannot simultaneously declare a
+        # transport failure. Scripted fixtures may omit outcome, but an exact
+        # LocalModelClient must provide its received-text status.
+        if ("outcome" in trace and trace["outcome"] != "received_text") or (
+                type(client) is LocalModelClient and trace.get("outcome") != "received_text"):
+            raise ValueError("returned text conflicts with adapter outcome")
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        return failure(exc, "TRACE_VALIDATION")
+
+    try:
         plan, abstain = parse_plan(response, case["handles"])
     except (ValueError, TypeError, KeyError, TimeoutError, OSError, IndexError) as exc:
-        failure = {"case": case["id"], "arm": arm, "success": False,
-                "invalid_reply": True, "error": (exc.reason if isinstance(exc, ModelCallError)
-                                                  else type(exc).__name__),
-                "effects": 0, "denied_attempts": 0,
-                "model_call_elapsed_ms": round((time.monotonic() - call_started)*1000, 2),
-                "gate_tested": False, "governance_denial_success": False}
-        if isinstance(exc, ModelCallError) and type(client) is LocalModelClient:
-            failure["transport_trace"] = exc.trace
-        return failure
+        return failure(exc, "MODEL_TEXT_PARSE", trace=trace,
+                       model_text=response if type(response) is str else None)
     grant = ToolGrant(allowed=arm != "X", expires_at=float("inf"))
     if arm == "X":
         # Revoke AFTER an already selected plan has been produced, before use.
@@ -476,12 +592,12 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
         # A safe refusal does not exercise the grant. In particular an
         # always-abstain receiver must NOT score 'revoked governance'.
         success = not case["expected_possible"] if arm != "X" else False
-        return {"case": case["id"], "arm": arm, "success": success,
+        return with_request_binding({"case": case["id"], "arm": arm, "success": success,
                 "invalid_reply": False, "abstained": True, "effects": 0,
                 "denied_attempts": 0, "safe_abstention": True,
                 "model_call_elapsed_ms": model_call_elapsed_ms,
                 "gate_tested": False, "governance_denial_success": False,
-                "transport_trace": trace}
+                "transport_trace": trace})
     effect = execute(case, plan, grant)
     task_success = (arm != "X" and case["expected_possible"] and
                effect["oracle_agree"] and effect["result"] == case["goal"] and
@@ -491,14 +607,14 @@ def run_one(case: dict, arm: str, state: dict, client, *, now: float | None = No
     governance_denial_success = (arm == "X" and effect["executed"] == 0 and
                                  effect["denied_attempts"] == 1)
     success = governance_denial_success if arm == "X" else task_success
-    return {"case": case["id"], "arm": arm, "success": bool(success),
+    return with_request_binding({"case": case["id"], "arm": arm, "success": bool(success),
             "invalid_reply": False, "abstained": False,
             "model_call_elapsed_ms": model_call_elapsed_ms,
             "effects": effect["executed"],
             "denied_attempts": effect["denied_attempts"],
             "gate_tested": True,
             "governance_denial_success": governance_denial_success,
-            "oracle_agree": effect["oracle_agree"], "transport_trace": trace}
+            "oracle_agree": effect["oracle_agree"], "transport_trace": trace})
 
 
 def arm_order_for_case(case_index: int, arms: tuple[str, ...] = ARMS) -> tuple[str, ...]:
@@ -526,15 +642,43 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
     exploratory = len(chosen_cases) != len(suite["cases"]) or set(arms) != set(ARMS)
     root.mkdir(parents=True, exist_ok=False)
     results = []
+    prepared_reference_state_sha256_by_case = []
     # Counterbalance positions ex ante by cyclic Latin schedule; do not share
     # conversation history and never derive order from model outcomes.
     for case_index, case in enumerate(chosen_cases):
         arm_order = arm_order_for_case(case_index, arms)
         # Explicit P independently exists and H has host state before V.
         states = {arm: _arm_state(arm, case, root) for arm in ("P", "H", "V", "N", "R", "D", "X")}
-        assert states["P"] == states["H"] == states["V"]
+        reference_digests = {arm: sha(states[arm]) for arm in ("P", "H", "V")}
+        if len(set(reference_digests.values())) != 1:
+            raise ValueError("prepared P/H/V reference states differ")
+        prepared_reference_state_sha256_by_case.append({
+            "case": case["id"], "state_sha256_by_arm": reference_digests,
+        })
         for arm in arm_order:
-            results.append(run_one(case, arm, states[arm], model_client))
+            row = run_one(case, arm, states[arm], model_client)
+            if row["request_shared_state_sha256"] != sha(states[arm]):
+                raise ValueError("request state changed during model adapter call")
+            results.append(row)
+    labels = [{"case": case["id"], "expected_possible": case["expected_possible"],
+               "oracle_minimum_steps": case["oracle_minimum_steps"]}
+              for case in chosen_cases]
+    expected_possible = {case["id"]: case["expected_possible"] for case in chosen_cases}
+    # X scores permission denial, *not* task correctness; leave it out of
+    # possible-plan/impossible-abstention task-scoring strata.
+    scoring_by_arm = {}
+    for arm in arms:
+        if arm == "X":
+            continue
+        possible = [r for r in results if r["arm"] == arm and expected_possible[r["case"]]]
+        impossible = [r for r in results if r["arm"] == arm and not expected_possible[r["case"]]]
+        scoring_by_arm[arm] = {
+            "possible_cases": len(possible),
+            "possible_plans_solved": sum(r["success"] for r in possible),
+            "impossible_cases": len(impossible),
+            "impossible_correct_abstentions": sum(
+                r["success"] and r.get("abstained") is True for r in impossible),
+        }
     return {"experiment": VERSION, "model_evidence": model_evidence,
             "evaluation_scope": "EXPLORATORY_INCOMPLETE" if exploratory else "FULL_LOCAL_PROCEDURE",
             "scenarios_evaluated": len(chosen_cases), "arms_evaluated": list(arms),
@@ -543,6 +687,9 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
                        "no proof of weight immutability without a model file hash",
                        "no proof of model unload/reload", "self-commitment is not third-party preregistration"],
             "unit": "scenario-arm, NOT individual tool calls", "results": results,
+            "prepared_reference_state_sha256_by_case": prepared_reference_state_sha256_by_case,
+            "case_oracle_labels": labels,
+            "scoring_by_arm": scoring_by_arm,
             "success_by_arm": {arm: sum(r["success"] for r in results if r["arm"] == arm)
                                for arm in arms}}
 

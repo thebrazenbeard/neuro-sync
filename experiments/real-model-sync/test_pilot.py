@@ -1,6 +1,7 @@
 """Hostile stdlib *fixture* tests. No actual neural model in this suite."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -57,6 +58,14 @@ class PilotTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pilot.load_suite(self.suite_path)
 
+    def test_old_v0_suite_cannot_be_rehashed_into_v1(self):
+        legacy = json.loads(self.suite_path.read_text())
+        legacy["version"] = "neuro-sync-local-receiver-v0"
+        self.suite_path.write_text(pilot.canonical_json(legacy) + "\n")
+        self.suite_path.with_suffix(".json.sha256").write_text(pilot.sha(legacy) + "\n")
+        with self.assertRaisesRegex(ValueError, "wrong suite version"):
+            pilot.load_suite(self.suite_path)
+
     def test_rehashed_forged_reachability_label_cannot_score_false_abstention(self):
         forged = json.loads(self.suite_path.read_text())
         # Attackers can rehash the suite, so a matching sidecar is not proof
@@ -68,11 +77,53 @@ class PilotTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reachability label"):
             pilot.load_suite(self.suite_path)
 
+    def test_v1_negative_goals_are_near_reachable_values_not_magnitude_sentinels(self):
+        self.assertEqual(self.suite["version"], "neuro-sync-local-receiver-v1")
+        negatives = [case for case in self.suite["cases"] if not case["expected_possible"]]
+        self.assertEqual(len(negatives), 2)
+        self.assertEqual(sum(c["oracle_minimum_steps"] == 1 for c in self.suite["cases"]), 4)
+        self.assertEqual(sum(c["oracle_minimum_steps"] == 2 for c in self.suite["cases"]), 6)
+        self.assertEqual([c["oracle_minimum_steps"] for c in self.suite["cases"][:2]],
+                         [1, 2])
+        for case in negatives:
+            reachable = {pilot.oracle_tool(op, case["start"]) for op in pilot.OPS}
+            reachable |= {pilot.oracle_tool(op, value)
+                          for value in tuple(reachable) for op in pilot.OPS}
+            self.assertIsNone(case["oracle_minimum_steps"])
+            self.assertIsNone(pilot.oracle_minimum_steps(case["start"], case["goal"]))
+            self.assertLessEqual(min(abs(case["goal"] - value) for value in reachable), 4)
+            self.assertNotIn(case["goal"], reachable)
+        for case in self.suite["cases"]:
+            self.assertNotEqual(case["start"], case["goal"])
+            self.assertLessEqual(abs(case["goal"]), 50)
+            self.assertEqual(case["oracle_minimum_steps"],
+                             pilot.oracle_minimum_steps(case["start"], case["goal"]))
+
+    def test_rehashed_forged_minimum_step_label_is_rejected(self):
+        forged = json.loads(self.suite_path.read_text())
+        case = next(case for case in forged["cases"] if case["oracle_minimum_steps"] == 1)
+        case["oracle_minimum_steps"] = 2
+        self.suite_path.write_text(pilot.canonical_json(forged) + "\n")
+        self.suite_path.with_suffix(".json.sha256").write_text(pilot.sha(forged) + "\n")
+        with self.assertRaisesRegex(ValueError, "reachability label"):
+            pilot.load_suite(self.suite_path)
+
+    def test_v1_out_of_range_goal_is_rejected_even_with_new_self_hash(self):
+        forged = json.loads(self.suite_path.read_text())
+        case = forged["cases"][0]
+        case["start"] = 9
+        case["goal"] = 81  # one real square operation, but outside v1 support
+        case["oracle_minimum_steps"] = 1
+        self.suite_path.write_text(pilot.canonical_json(forged) + "\n")
+        self.suite_path.with_suffix(".json.sha256").write_text(pilot.sha(forged) + "\n")
+        with self.assertRaisesRegex(ValueError, "invalid scenario"):
+            pilot.load_suite(self.suite_path)
+
     def test_receiver_prompt_excludes_private_expected_and_registry(self):
         request = pilot.model_request(self.case, {})
         self.assertEqual(request["candidate_handles"], self.case["handles"])
         text = json.dumps(request)
-        for secret_key in ("registry", "gold_length", "expected_possible"):
+        for secret_key in ("registry", "oracle_minimum_steps", "expected_possible"):
             self.assertNotIn(secret_key, text)
         self.assertNotIn("source_file", text)
 
@@ -147,6 +198,21 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(report["success_by_arm"]["V"], 12)
         self.assertEqual(report["success_by_arm"]["P"], 12)
         self.assertEqual(report["success_by_arm"]["H"], 12)
+        self.assertEqual(report["scoring_by_arm"]["V"], {
+            "possible_cases": 10, "possible_plans_solved": 10,
+            "impossible_cases": 2, "impossible_correct_abstentions": 2,
+        })
+        self.assertNotIn("X", report["scoring_by_arm"])
+        self.assertEqual(len(report["prepared_reference_state_sha256_by_case"]), 12)
+        references = {r["case"]: r["state_sha256_by_arm"]
+                      for r in report["prepared_reference_state_sha256_by_case"]}
+        for case in self.suite["cases"]:
+            reference = references[case["id"]]
+            self.assertEqual(reference["P"], reference["H"])
+            self.assertEqual(reference["H"], reference["V"])
+            for row in report["results"]:
+                if row["case"] == case["id"] and row["arm"] in reference:
+                    self.assertEqual(row["request_shared_state_sha256"], reference[row["arm"]])
 
     def test_uninformed_receiver_is_not_hardcoded_to_fail(self):
         h = self.case["handles"][0]
@@ -161,6 +227,117 @@ class PilotTests(unittest.TestCase):
         self.assertTrue(result["invalid_reply"])
         self.assertEqual(result["effects"], 0)
 
+    def test_received_text_parse_failure_retains_safe_trace_and_only_text_digest(self):
+        """The exact model-text hash differs from the HTTP envelope digest."""
+        marker = "PRIVATE_MODEL_ANSWER_SENTINEL_7429"
+        answer = "```json\n{" + marker + "}\n```"
+        envelope = {"model": "SERVER_MODEL_STRING_NOT_SOURCE_AUTHORITY_8341",
+                    "message": {"content": answer}}
+        raw_http = json.dumps(envelope).encode("utf8")
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, amount): return raw_http
+
+        class Opener:
+            def open(self, request, timeout): return Response()
+
+        client = pilot.LocalModelClient("http://127.0.0.1:11435", "ollama",
+                                        "fixture-no-model", timeout=2, max_tokens=64)
+        client.opener = Opener()
+        row = pilot.run_one(self.case, "V", {}, client)
+        self.assertTrue(row["invalid_reply"])
+        self.assertFalse(row["success"])
+        self.assertEqual(row["failure_stage"], "MODEL_TEXT_PARSE")
+        self.assertEqual(row["parse_failure_category"], "JSON_SYNTAX")
+        self.assertEqual(row["model_text_sha256"], hashlib.sha256(answer.encode()).hexdigest())
+        self.assertEqual(row["model_text_bytes"], len(answer.encode()))
+        self.assertNotEqual(row["model_text_sha256"], hashlib.sha256(raw_http).hexdigest())
+        self.assertEqual(row["transport_trace"]["response_sha256"],
+                         hashlib.sha256(raw_http).hexdigest())
+        self.assertEqual(row["transport_trace"]["outcome"], "received_text")
+        self.assertEqual(row["transport_trace"]["shared_state_sha256"], pilot.sha({}))
+        self.assertNotIn(marker, json.dumps(row))
+        self.assertNotIn("SERVER_MODEL_STRING_NOT_SOURCE_AUTHORITY_8341", json.dumps(row))
+        self.assertEqual(row["effects"], 0)
+        self.assertFalse(row["gate_tested"])
+
+    def test_parse_rejection_categories_are_finite_and_no_text_is_persisted(self):
+        marker = "SENSITIVE_TEXT_SHOULD_NEVER_SURVIVE_7391"
+        handles = self.case["handles"]
+        candidates = (
+            ("{" + marker, "JSON_SYNTAX"),
+            (json.dumps({"steps": [], "abstain": False, "extra": marker}), "ENVELOPE"),
+            (json.dumps({"steps": [], "abstain": False}), "STEPS"),
+            (json.dumps({"steps": [{"handle": handles[0], "input": "previous"}],
+                         "abstain": False}), "HANDLE_DEPENDENCY"),
+        )
+        for answer, category in candidates:
+            with self.subTest(category=category):
+                row = pilot.run_one(self.case, "V", {},
+                                    lambda _: (answer, {"response": answer,
+                                                        "success": True,
+                                                        "prompt_sha256": "f" * 64,
+                                                        "outcome": "received_text"}))
+                self.assertEqual(row["failure_stage"], "MODEL_TEXT_PARSE")
+                self.assertEqual(row["parse_failure_category"], category)
+                self.assertTrue(row["invalid_reply"])
+                self.assertFalse(row["success"])
+                self.assertEqual(row["model_text_sha256"], hashlib.sha256(answer.encode()).hexdigest())
+                self.assertNotIn("response", row["transport_trace"])
+                self.assertNotIn("success", row["transport_trace"])
+                self.assertNotIn(answer, json.dumps(row))
+                self.assertEqual(row["effects"], 0)
+
+        # Known trace key names are not enough: their VALUES are untrusted.
+        forged = "LEAK_RAW_MODEL_CONTENT_3FB462"
+        row = pilot.run_one(self.case, "V", {}, lambda _: (
+            '{"steps":BAD}', {"outcome": "received_text", "response_sha256": forged,
+                              "prompt_profile": forged, "request_bytes": 1000,
+                              "max_tokens": forged, "timeout_seconds": forged}))
+        self.assertNotIn(forged, json.dumps(row))
+        self.assertEqual(row["transport_trace"], {"request_bytes": 1000,
+                                                   "outcome": "received_text"})
+
+    def test_adapter_vs_trace_vs_model_parse_failures_are_disjoint(self):
+        def adapter_timeout(_):
+            raise TimeoutError("PRIVATE_ADAPTER_EXCEPTION_SENTINEL_9981")
+        timeout = pilot.run_one(self.case, "V", {}, adapter_timeout)
+        self.assertEqual(timeout["failure_stage"], "ADAPTER_FAILURE")
+        self.assertEqual(timeout["error"], "TimeoutError")
+        self.assertNotIn("model_text_sha256", timeout)
+        self.assertNotIn("PRIVATE_ADAPTER_EXCEPTION", json.dumps(timeout))
+
+        def forged_model_call_error(_):
+            raise pilot.ModelCallError("RAW_MODEL_TEXT_SECRET_7753",
+                                       {"response_sha256": "RAW_MODEL_TEXT_SECRET_7753"})
+        spoof = pilot.run_one(self.case, "V", {}, forged_model_call_error)
+        self.assertEqual(spoof["failure_stage"], "ADAPTER_FAILURE")
+        self.assertEqual(spoof["error"], "ModelCallError")
+        self.assertNotIn("RAW_MODEL_TEXT_SECRET_7753", json.dumps(spoof))
+
+        invalid_trace = pilot.run_one(self.case, "V", {},
+                                      lambda _: ('{"steps":[],"abstain":true}',
+                                                 "raw model text must not be stored"))
+        self.assertEqual(invalid_trace["failure_stage"], "TRACE_VALIDATION")
+        self.assertNotIn("model_text_sha256", invalid_trace)
+        self.assertNotIn("transport_trace", invalid_trace)
+        self.assertEqual(invalid_trace["effects"], 0)
+
+        downgraded = pilot.run_one(self.case, "V", {}, lambda _: (
+            '{"steps":BAD}', {"outcome": "transport_or_parse_failure",
+                            "response_sha256": "f" * 64,
+                            "max_tokens": 64, "timeout_seconds": 25,
+                            "request_bytes": 200, "prompt_sha256": "a" * 64,
+                            "shared_state_sha256": pilot.sha({}),
+                            "prompt_profile": "compact"}))
+        self.assertEqual(downgraded["failure_stage"], "TRACE_VALIDATION")
+        self.assertTrue(downgraded["invalid_reply"])
+        self.assertNotIn("transport_trace", downgraded)
+        self.assertNotIn("model_text_sha256", downgraded)
+        self.assertFalse(downgraded["success"])
+
     def test_model_trace_cannot_override_host_score_or_case_identity(self):
         h = self.case["handles"][0]
         output = json.dumps({"steps": [{"handle": h, "input": "initial"}], "abstain": False})
@@ -172,6 +349,19 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(result["effects"], 1)
         self.assertEqual(result["transport_trace"], forged)
         self.assertFalse(result["governance_denial_success"])
+        self.assertEqual(result["request_shared_state_sha256"], pilot.sha({}))
+
+    def test_mutating_model_adapter_cannot_silently_change_prepared_payload(self):
+        def corrupt_request(req):
+            mapping = req["shared_external_state"].get("operations")
+            if mapping:
+                mapping[next(iter(mapping))] = "corrupted-after-source-binding"
+            return '{"steps":[],"abstain":true}', {}
+
+        with self.assertRaisesRegex(ValueError, "request state changed"):
+            pilot.run_suite(self.suite, corrupt_request, self.root / "mutation",
+                            model_evidence={"real_endpoint": False},
+                            max_cases=1, arms=("V",))
 
     def test_sealed_suite_rejects_path_escape_even_with_matching_self_hash(self):
         malformed = json.loads(self.suite_path.read_text())
@@ -238,7 +428,7 @@ class PilotTests(unittest.TestCase):
             self.assertNotIn(biasing_phrase, neutral_instruction)
         for profile in (compact, legacy):
             text = pilot.canonical_json(profile)
-            for secret in ("expected_possible", "gold_length", "registry"):
+            for secret in ("expected_possible", "oracle_minimum_steps", "registry"):
                 self.assertNotIn(secret, text)
 
         # Every arm uses the same formatting and same handles; only the
@@ -289,6 +479,7 @@ class PilotTests(unittest.TestCase):
                     pilot.canonical_json(captured["body"]).encode()))
                 self.assertGreaterEqual(trace["latency_ms"], 0)
                 self.assertEqual(trace["outcome"], "received_text")
+                self.assertEqual(trace["shared_state_sha256"], pilot.sha({}))
                 options = captured["body"].get("options", captured["body"])
                 self.assertEqual(options.get("num_predict", options.get("max_tokens")), 64)
 
