@@ -69,15 +69,29 @@ def _validate_v1(data: dict, cases: list[str], grouped: dict[str, dict[str, dict
                     for step, n in expected.items()), "v1 oracle stratum count mismatch")
 
     reference = data.get("prepared_reference_state_sha256_by_case")
-    _ensure(type(reference) is list and len(reference) == len(cases),
+    # Older v1 pilots prepare all P/H/V fixtures even on a V-only exploratory
+    # smoke. Newer lazy-arm pilots correctly avoid creating unrequested P/H
+    # fixtures and report zero comparator parity records. Support both shapes,
+    # but never waive P/H/V digest checks when all three arms are selected.
+    parity_arms_present = {"P", "H", "V"}.issubset(data["arms_evaluated"])
+    has_reference = type(reference) is list and len(reference) == len(cases)
+    no_partial_reference = (type(reference) is list and len(reference) == 0 and
+                            not parity_arms_present and
+                            data["evaluation_scope"] == "EXPLORATORY_INCOMPLETE")
+    _ensure(has_reference or no_partial_reference,
             "missing v1 prepared reference state digests")
+    if no_partial_reference:
+        # Internal iteration records are not persisted or passed off as parity
+        # evidence; the per-call request digest checks still run for every row.
+        reference = [{"case": case, "state_sha256_by_arm": {}} for case in cases]
     for index, item in enumerate(reference):
         _ensure(type(item) is dict and set(item) == {
             "case", "state_sha256_by_arm"}, "bad v1 prepared digest record")
         digests = item["state_sha256_by_arm"]
         _ensure(item["case"] == cases[index] and type(digests) is dict and
-                set(digests) == {"P", "H", "V"} and
-                all(_sha(v) for v in digests.values()) and len(set(digests.values())) == 1,
+                set(digests) == ({"P", "H", "V"} if has_reference else set()) and
+                all(_sha(v) for v in digests.values()) and
+                (not has_reference or len(set(digests.values())) == 1),
                 "prepared P/H/V reference digests differ or are malformed")
         for arm, row in grouped[item["case"]].items():
             request_digest = row.get("request_shared_state_sha256")

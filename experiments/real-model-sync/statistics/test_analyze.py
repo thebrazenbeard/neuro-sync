@@ -263,6 +263,35 @@ class ScenarioStatisticsTests(unittest.TestCase):
         self.assertEqual(summary["arms"]["V"]["stratified_task_scores"][
             "impossible_correct_abstentions"], 2)
 
+    def test_v1_v_only_receipt_without_unrequested_parity_artifacts(self):
+        """New lazy-arm pilots emit no P/H/V parity record for V-only smoke."""
+        report = current_pilot_v1_receipt(("V",))
+        report["prepared_reference_state_sha256_by_case"] = []
+        summary = self.s.analyze(report)
+        self.assertEqual(summary["qualification"], "EXPLORATORY_ONLY")
+        self.assertEqual(summary["neural_transfer_established"], False)
+        self.assertEqual(summary["arms"]["V"]["stratified_task_scores"][
+            "impossible_correct_abstentions"], 2)
+
+        tampered_request = copy.deepcopy(report)
+        tampered_request["results"][0]["request_shared_state_sha256"] = "invalid"
+        with self.assertRaisesRegex(ValueError, "request-state digest"):
+            self.s.analyze(tampered_request)
+
+        # A legacy V-only receipt *with* parity digests still has to prove
+        # P/H/V agreement; merely being exploratory does not excuse forgery.
+        legacy = current_pilot_v1_receipt(("V",))
+        legacy["prepared_reference_state_sha256_by_case"][0][
+            "state_sha256_by_arm"]["H"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "prepared P/H/V reference"):
+            self.s.analyze(legacy)
+
+        # With all comparator arms, missing parity may not silently pass.
+        full = current_pilot_v1_receipt()
+        full["prepared_reference_state_sha256_by_case"] = []
+        with self.assertRaisesRegex(ValueError, "prepared reference state digests"):
+            self.s.analyze(full)
+
     def test_v1_twelve_case_prefix_of_larger_suite_remains_exploratory(self):
         report = current_pilot_v1_receipt(suite_size=16, max_cases=12)
         summary = self.s.analyze(report)
