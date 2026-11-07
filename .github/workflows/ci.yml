@@ -57,6 +57,13 @@ jobs:
       - name: Verify durable clock authority rollback and fail-closed controls
         run: test -f tests/test_bus_clock_floor.py && PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_clock_floor.py' -v
 
+      - name: Verify read-only recovery diagnostics and historical-restore falsifiers
+        run: |
+          test -f tests/test_bus_recovery_preflight.py
+          test -f tests/test_bus_recovery_falsifiers.py
+          PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_recovery_preflight.py' -v
+          PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_recovery_falsifiers.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 
