@@ -19,7 +19,10 @@ accepts a separately typed `NEUROSYNC_PEFT_ADAPTER_ONLY_INTENT_V1`:
 - Unchanged exact declared donor/recipient base weights, tokenizer and model
   config SHA-256. A revision-like hex commit is supplemental, not a byte hash.
 - Separate positive-size, content-addressed **adapter weights** and **adapter
-  config** roles. Neither is permitted to masquerade as the base.
+  config** roles. Neither is permitted to masquerade as the base, tokenizer or
+  base-model config. The five cross-role SHA-256s must be distinct; only the
+  deliberately identical donor/recipient references **within the same role**
+  may share a digest for the frozen-base method.
 - A complete declared target map: rank, alpha, module names, A/B dtypes,
   input/output dimensions and exact target suffix. Its canonical hash matches
   the proposed format documented by the PEFT inspector/binding Drafts #38/#48.

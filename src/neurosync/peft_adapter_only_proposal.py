@@ -100,9 +100,19 @@ def propose_adapter_only_transfer(intent: dict) -> dict:
                                         "target_map", "target_map_sha256"}, "adapter")
     for field in ("weights_sha256", "config_sha256", "target_map_sha256"):
         _sha(adapter[field], f"adapter.{field}")
-    _require(adapter["weights_sha256"] != base["donor_base_weights_sha256"] and
-             adapter["weights_sha256"] != adapter["config_sha256"],
-             "adapter weights must not alias base or config file")
+    # Same-role donor/recipient frozen base references are deliberately equal.
+    # Cross-role files are *not* interchangeable: base weights, tokenizer,
+    # model configuration, adapter weights and adapter config have distinct
+    # formats and must not be asserted as the same byte object.
+    artifact_roles = (
+        base["donor_base_weights_sha256"],
+        base["donor_tokenizer_sha256"],
+        base["donor_config_sha256"],
+        adapter["weights_sha256"],
+        adapter["config_sha256"],
+    )
+    _require(len(set(artifact_roles)) == len(artifact_roles),
+             "incompatible artifact roles must not alias")
     geometry_sha = target_map_sha256(adapter["target_map"])
     _require(geometry_sha == adapter["target_map_sha256"],
              "target map digest does not match proposed geometry")

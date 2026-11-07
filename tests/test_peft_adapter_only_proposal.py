@@ -111,6 +111,28 @@ class AdapterOnlyProposalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "target map digest"):
             propose_adapter_only_transfer(changed)
 
+    def test_cross_role_aliases_cannot_masquerade_as_independent_artifacts(self):
+        # Donor and recipient are allowed to share the *same role* (exact
+        # frozen base), but adapter bytes/config cannot alias base,
+        # tokenizer or model config: those represent different file types.
+        for adapter_field in ("weights_sha256", "config_sha256"):
+            for base_field in ("donor_base_weights_sha256", "donor_tokenizer_sha256",
+                               "donor_config_sha256"):
+                changed = intent()
+                digest = changed["base"][base_field]
+                changed["adapter"][adapter_field] = digest
+                role = "adapter_weights" if adapter_field == "weights_sha256" else "adapter_config"
+                changed["input_artifacts"][role]["sha256"] = digest
+                with self.subTest(adapter=adapter_field, base=base_field), \
+                        self.assertRaisesRegex(ValueError, "alias"):
+                    propose_adapter_only_transfer(changed)
+
+        changed = intent()
+        changed["base"]["donor_tokenizer_sha256"] = sha("1")
+        changed["base"]["recipient_tokenizer_sha256"] = sha("1")
+        with self.assertRaisesRegex(ValueError, "alias"):
+            propose_adapter_only_transfer(changed)
+
     def test_target_map_digest_matches_documented_peft_join_encoding(self):
         target = intent()["adapter"]["target_map"]
         reference = hashlib.sha256(json.dumps(target, sort_keys=True,
