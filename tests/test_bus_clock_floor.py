@@ -224,7 +224,7 @@ class ClockFloorTests(unittest.TestCase):
         owner.grant_plan("old", KEY, plan=self.plan, expires_at_epoch=200)
         self.clock[0] = 250
         self.ledger.raise_on_project = True
-        with self.assertRaisesRegex(RuntimeError, "injected projection failure"):
+        with self.assertRaisesRegex(ReadAccessDenied, "projection unavailable"):
             owner.grant_plan("failed", KEY, plan=self.plan, expires_at_epoch=300)
         self.assertEqual(self.high_water(), 250)
         self.ledger.raise_on_project = False
@@ -244,10 +244,12 @@ class ClockFloorTests(unittest.TestCase):
         self.clock[0] = 250
         self.clock_sequence = [150, 150]
         self.ledger.raise_on_project = True
-        with self.assertRaisesRegex(RuntimeError, "injected projection failure"):
+        with self.assertRaisesRegex(ReadAccessDenied, "projection unavailable"):
             owner.execute_plan("other", "other-attempt", KEY, plan=self.plan)
         self.assertEqual(self.high_water(), 250)
-        self.assertEqual(owner.attempt("other-attempt")["status"], "claimed")
+        attempt = owner.attempt("other-attempt")
+        self.assertEqual(attempt["status"], "denied")
+        self.assertEqual(attempt["failure_class"], "infrastructure")
         self.ledger.raise_on_project = False
         self.clock[0] = 180
         with self.assertRaisesRegex(ReadAccessDenied, "clock.*backward"):

@@ -12,6 +12,11 @@ replay after process restart, at the cost of a fail-closed/ambiguous receipt
 if a process dies after consumption and before recording its effect. External
 effects cannot be transactionally rolled back by SQLite. This broker promises
 at-most-one *handler attempt* per invocation ID, never exactly-once delivery.
+Handled projection/serialization failures before the handler are recorded as
+denied without invoking it; a real process crash can still leave `claimed`.
+The durable ``failure_class`` distinguishes permission denials from
+infrastructure failures. Counting every ``denied`` status as a successful
+permission-governance test would contaminate an evaluator.
 
 The older ``HostBoundReadGate.use`` remains a cooperative, non-atomic source
 seam; protected effects should go through this separate broker instead.
@@ -59,7 +64,7 @@ def _encoded(value: Any, *, limit: int = MAX_READ_VALUE_BYTES) -> bytes:
     try:
         result = json.dumps(value, ensure_ascii=False, allow_nan=False,
                             sort_keys=True, separators=(",", ":")).encode("utf-8")
-    except (TypeError, ValueError, UnicodeError) as exc:
+    except (TypeError, ValueError, UnicodeError, RecursionError) as exc:
         raise ReadAccessDenied("effect value is not bounded JSON") from exc
     if len(result) > limit:
         raise ReadAccessDenied("effect value exceeds host limit")
@@ -273,6 +278,8 @@ class HostOwnedEffectBroker:
                     principal TEXT NOT NULL, target TEXT NOT NULL,
                     session TEXT NOT NULL, state_key TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('claimed','denied','ok','raised')),
+                    failure_class TEXT CHECK(failure_class IS NULL OR failure_class IN
+                        ('permission','infrastructure','handler')),
                     started REAL NOT NULL, finished REAL,
                     state_sha256 TEXT, result_sha256 TEXT,
                     handler_artifact_sha256 TEXT NOT NULL,
@@ -280,12 +287,16 @@ class HostOwnedEffectBroker:
                     PRIMARY KEY (principal,target,session,invocation_id)
                 );
             """)
-            # Existing databases predate the attempts plan column. ALTERs use
-            # individual execute calls under a writer transaction: SQLite's
-            # executescript implicitly commits a pending transaction.
+            # Existing databases may lack either independently introduced
+            # nullable column. Serialize migrations for concurrent starts;
+            # neither historical rows nor replay claims may be discarded.
             db.execute("BEGIN IMMEDIATE")
             try:
-                for table, columns in {"attempts": {"plan_sha256": "TEXT"}}.items():
+                for table, columns in {"attempts": {
+                    "plan_sha256": "TEXT",
+                    "failure_class": "TEXT CHECK(failure_class IS NULL OR failure_class IN "
+                                     "('permission','infrastructure','handler'))",
+                }}.items():
                     present = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
                     for name, kind in columns.items():
                         if name not in present:
@@ -504,7 +515,11 @@ class HostOwnedEffectBroker:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                projection = self._ledger.project(self._context.target_id, self._context.session_id)
+                try:
+                    projection = self._ledger.project(self._context.target_id,
+                                                      self._context.session_id)
+                except Exception as exc:
+                    raise ReadAccessDenied("host ledger projection unavailable") from exc
                 if type(projection) is not dict or state_key not in projection:
                     raise ReadAccessDenied("effect state unavailable")
                 state_hash = sha256(_plan_encoded(projection[state_key])).hexdigest()
@@ -583,7 +598,12 @@ class HostOwnedEffectBroker:
 
     def _record(self, db: sqlite3.Connection, invocation_id: str,
                 *, status: str, finished: float, state_hash: str | None = None,
-                result_hash: str | None = None) -> dict[str, Any]:
+                result_hash: str | None = None,
+                failure_class: str | None = None) -> dict[str, Any]:
+        permitted = {"ok": (None,), "denied": ("permission", "infrastructure"),
+                     "raised": ("handler",)}
+        if status not in permitted or failure_class not in permitted[status]:
+            raise ValueError("invalid effect outcome/failure classification")
         scope = (invocation_id, self._context.principal_id,
                  self._context.target_id, self._context.session_id)
         row = db.execute("SELECT * FROM attempts WHERE invocation_id=? "
@@ -601,14 +621,19 @@ class HostOwnedEffectBroker:
             "artifact_binding_kind": "host_asserted_unverified",
             "evidence_class": "HOST_EXECUTION_RECEIPT_NOT_INDEPENDENT_VERIFY",
         }
+        # Preserve the prior successful-receipt schema/hash. Denial and handler
+        # failure receipts gain an explicit non-success classification.
+        if failure_class is not None:
+            receipt["failure_class"] = failure_class
         if row["plan_sha256"] is not None:
             receipt["version"] = 2
             receipt["plan_sha256"] = row["plan_sha256"]
         receipt_hash = _hash(receipt)
         db.execute("UPDATE attempts SET status=?, finished=?, state_sha256=?, "
-                   "result_sha256=?, receipt_sha256=? WHERE invocation_id=? "
+                   "result_sha256=?, receipt_sha256=?, failure_class=? WHERE invocation_id=? "
                    "AND principal=? AND target=? AND session=?", (
-                       status, finished, state_hash, result_hash, receipt_hash, *scope))
+                       status, finished, state_hash, result_hash, receipt_hash,
+                       failure_class, *scope))
         return {**receipt, "receipt_sha256": receipt_hash}
 
     def execute(self, grant_id: str, invocation_id: str, state_key: str) -> tuple[Any, dict[str, Any]]:
@@ -656,10 +681,15 @@ class HostOwnedEffectBroker:
             db.execute("BEGIN IMMEDIATE")
             try:
                 if not self._granted(db, grant_id, state_key, self._now()):
-                    self._record(db, invocation_id, status="denied", finished=self._now())
+                    self._record(db, invocation_id, status="denied", finished=self._now(),
+                                 failure_class="permission")
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
-                projection = self._ledger.project(self._context.target_id, self._context.session_id)
+                try:
+                    projection = self._ledger.project(self._context.target_id,
+                                                      self._context.session_id)
+                except Exception as exc:
+                    raise ReadAccessDenied("host ledger projection unavailable") from exc
                 if type(projection) is not dict or state_key not in projection:
                     raise ReadAccessDenied("effect state unavailable")
                 state = json.loads(_encoded(projection[state_key]).decode("utf-8"))
@@ -668,7 +698,7 @@ class HostOwnedEffectBroker:
                 # revoke cannot commit while this transaction owns the lock.
                 if not self._granted(db, grant_id, state_key, self._now()):
                     self._record(db, invocation_id, status="denied", finished=self._now(),
-                                 state_hash=state_hash)
+                                 state_hash=state_hash, failure_class="permission")
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
                 self._in_handler.active = True
@@ -682,7 +712,8 @@ class HostOwnedEffectBroker:
                     return result, receipt
                 except Exception as exc:
                     self._record(db, invocation_id, status="raised",
-                                 finished=self._now(), state_hash=state_hash)
+                                 finished=self._now(), state_hash=state_hash,
+                                 failure_class="handler")
                     db.commit()
                     raise EffectAttemptFailed("effect attempt failed; invocation consumed") from exc
                 finally:
@@ -691,7 +722,8 @@ class HostOwnedEffectBroker:
                 if db.in_transaction:
                     # Reservation remains consumed even if this effect never
                     # began. There is no safe automatic retry after ambiguity.
-                    self._record(db, invocation_id, status="denied", finished=self._now())
+                    self._record(db, invocation_id, status="denied", finished=self._now(),
+                                 failure_class="infrastructure")
                     db.commit()
                 raise
 
@@ -757,7 +789,11 @@ class HostOwnedEffectBroker:
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
             try:
-                projection = self._ledger.project(self._context.target_id, self._context.session_id)
+                try:
+                    projection = self._ledger.project(self._context.target_id,
+                                                      self._context.session_id)
+                except Exception as exc:
+                    raise ReadAccessDenied("host ledger projection unavailable") from exc
                 if type(projection) is not dict or state_key not in projection:
                     raise ReadAccessDenied("effect state unavailable")
                 encoded_state = _plan_encoded(projection[state_key])
@@ -767,7 +803,7 @@ class HostOwnedEffectBroker:
                                      plan_hash=plan_hash, plan_effect=approved,
                                      plan_invocation_id=invocation_id):
                     self._record(db, invocation_id, status="denied", finished=self._plan_now(db),
-                                 state_hash=state_hash)
+                                 state_hash=state_hash, failure_class="permission")
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
                 saved = db.execute("SELECT planned_state_sha256 FROM clock_guarded_plan_grants WHERE "
@@ -776,14 +812,14 @@ class HostOwnedEffectBroker:
                                        self._context.target_id, self._context.session_id)).fetchone()
                 if saved is None or state_hash != saved["planned_state_sha256"]:
                     self._record(db, invocation_id, status="denied", finished=self._plan_now(db),
-                                 state_hash=state_hash)
+                                 state_hash=state_hash, failure_class="infrastructure")
                     db.commit()
                     raise ReadAccessDenied("approved plan state changed before effect")
                 if not self._granted(db, grant_id, state_key, self._plan_now(db),
                                      plan_hash=plan_hash, plan_effect=approved,
                                      plan_invocation_id=invocation_id):
                     self._record(db, invocation_id, status="denied", finished=self._plan_now(db),
-                                 state_hash=state_hash)
+                                 state_hash=state_hash, failure_class="permission")
                     db.commit()
                     raise ReadAccessDenied("grant revoked or expired before effect")
                 self._in_handler.active = True
@@ -797,22 +833,30 @@ class HostOwnedEffectBroker:
                     return result, receipt
                 except Exception as exc:
                     self._record(db, invocation_id, status="raised",
-                                 finished=self._plan_now(db), state_hash=state_hash)
+                                 finished=self._plan_now(db), state_hash=state_hash,
+                                 failure_class="handler")
                     db.commit()
                     raise EffectAttemptFailed("effect attempt failed; invocation consumed") from exc
                 finally:
                     self._in_handler.active = False
             except (ReadAccessDenied, sqlite3.Error):
                 if db.in_transaction:
-                    self._record(db, invocation_id, status="denied", finished=self._plan_now(db))
+                    self._record(db, invocation_id, status="denied", finished=self._plan_now(db),
+                                 failure_class="infrastructure")
                     db.commit()
                 raise
 
     def attempt(self, invocation_id: str) -> dict[str, Any] | None:
-        """Read durable attempt status; ``claimed`` means crash ambiguity."""
+        """Read durable outcome/class; ``claimed`` means crash ambiguity.
+
+        A metrics consumer must demand both ``status='denied'`` and
+        ``failure_class='permission'`` for local permission-denial evidence.
+        This still does not authenticate the broker's principal or host.
+        """
         invocation_id = _identifier(invocation_id)
         with self._connect() as db:
-            row = db.execute("SELECT status,receipt_sha256,grant_id,state_sha256,result_sha256,plan_sha256 "
+            row = db.execute("SELECT status,failure_class,receipt_sha256,grant_id,"
+                             "state_sha256,result_sha256,plan_sha256 "
                              "FROM attempts WHERE invocation_id=? AND principal=? AND target=? "
                              "AND session=?", (
                                  invocation_id, self._context.principal_id,

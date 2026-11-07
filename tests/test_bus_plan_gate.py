@@ -67,6 +67,8 @@ class PlanBoundEffectTests(unittest.TestCase):
         self.assertEqual(receipt["plan_sha256"], independently_hash(self.plan))
         self.assertEqual(receipt["state_sha256"], independently_hash(self.ledger.value))
         self.assertEqual(receipt["status"], "ok")
+        self.assertNotIn("failure_class", receipt)
+        self.assertIsNone(broker.attempt("invoke")["failure_class"])
         self.assertEqual(self.broker().attempt("invoke")["plan_sha256"], receipt["plan_sha256"])
         self.assertEqual(len(self.effects), 1)
         # Handler sees frozen copies, never mutable caller-owned values.
@@ -184,6 +186,7 @@ class PlanBoundEffectTests(unittest.TestCase):
             broker.execute_plan("plan", "stale", KEY, plan=self.plan)
         attempt = broker.attempt("stale")
         self.assertEqual(attempt["status"], "denied")
+        self.assertEqual(attempt["failure_class"], "infrastructure")
         self.assertEqual(attempt["plan_sha256"], independently_hash(self.plan))
         self.assertEqual(self.effects, [])
 
@@ -204,6 +207,7 @@ class PlanBoundEffectTests(unittest.TestCase):
         with self.assertRaises(ReadAccessDenied):
             broker.execute_plan("normal", "pathological", KEY, plan=self.plan)
         self.assertEqual(broker.attempt("pathological")["status"], "denied")
+        self.assertEqual(broker.attempt("pathological")["failure_class"], "infrastructure")
         self.assertEqual(self.effects, [])
 
     def test_revoked_expired_scope_and_changed_handler_denied(self):
@@ -238,9 +242,41 @@ class PlanBoundEffectTests(unittest.TestCase):
         with self.assertRaises(EffectAttemptFailed):
             broker.execute_plan("grant", "invoke", KEY, plan=self.plan)
         self.assertEqual(broker.attempt("invoke")["status"], "raised")
+        self.assertEqual(broker.attempt("invoke")["failure_class"], "handler")
         with self.assertRaises(ReadAccessDenied):
             self.broker(descriptor=effect).execute_plan("grant", "invoke", KEY, plan=self.plan)
         self.assertEqual(len(self.effects), 1)
+
+    def test_post_claim_projection_outage_is_not_permission_denial(self):
+        broker = self.broker()
+        broker.grant_plan("grant", KEY, plan=self.plan, expires_at_epoch=200)
+        def broken_project(_target, _session):
+            raise RuntimeError("local ledger unavailable")
+        self.ledger.project = broken_project
+        with self.assertRaisesRegex(ReadAccessDenied, "projection unavailable"):
+            broker.execute_plan("grant", "outage", KEY, plan=self.plan)
+        attempt = broker.attempt("outage")
+        self.assertEqual(attempt["status"], "denied")
+        self.assertEqual(attempt["failure_class"], "infrastructure")
+        self.assertEqual(attempt["plan_sha256"], independently_hash(self.plan))
+        self.assertEqual(self.effects, [])
+
+    def test_post_claim_expiry_is_permission_denial(self):
+        broker = self.broker()
+        broker.grant_plan("grant", KEY, plan=self.plan, expires_at_epoch=101)
+        original_project = self.ledger.project
+        def advancing_project(target, session):
+            value = original_project(target, session)
+            self.now = 101.0
+            return value
+        self.ledger.project = advancing_project
+        with self.assertRaisesRegex(ReadAccessDenied, "revoked or expired"):
+            broker.execute_plan("grant", "expired-after-claim", KEY, plan=self.plan)
+        attempt = broker.attempt("expired-after-claim")
+        self.assertEqual(attempt["status"], "denied")
+        self.assertEqual(attempt["failure_class"], "permission")
+        self.assertEqual(attempt["plan_sha256"], independently_hash(self.plan))
+        self.assertEqual(self.effects, [])
 
     def test_writer_lock_blocks_revocation_until_handler_returns(self):
         entered = threading.Event()
