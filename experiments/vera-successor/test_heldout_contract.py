@@ -68,10 +68,16 @@ def fixture() -> tuple[dict, dict, str]:
     return plan, observations, plan_digest
 
 
+def score(plan: dict, observations: dict, plan_digest: str) -> dict:
+    """Exercise the public API with the exact JSON bytes being attested."""
+    return module.evaluate(module._canonical(plan), observations,
+                           plan_sha256=plan_digest)
+
+
 class HeldoutContractTests(unittest.TestCase):
     def test_complete_five_arm_comparison_is_provisional(self):
         p, o, h = fixture()
-        result = module.evaluate(p, o, plan_sha256=h)
+        result = score(p, o, h)
         self.assertEqual("PROVISIONAL_OBJECTIVE_TOKEN_SCORES",
                          result["claim_ceiling"])
         self.assertEqual(120, result["total_rows"])
@@ -84,8 +90,10 @@ class HeldoutContractTests(unittest.TestCase):
         p, o, h = fixture()
         private = "PRIVATE_RELATIONSHIP_MARKER_DO_NOT_EXPORT"
         p["cases"][0]["accepted_exact_tokens"] = [private]
+        h = hashlib.sha256(module._canonical(p)).hexdigest()
+        o["plan_sha256"] = h
         # Only the public-safe result is returned; private text stays local.
-        result = module.evaluate(p, o, plan_sha256=h)
+        result = score(p, o, h)
         self.assertNotIn(private, json.dumps(result))
         self.assertNotIn("response_text", json.dumps(result))
 
@@ -117,32 +125,61 @@ class HeldoutContractTests(unittest.TestCase):
                 elif variation == "extra_field":
                     rows[0]["unbound_task_hint"] = "change my score"
                 with self.assertRaises(module.ContractError):
-                    module.evaluate(p, altered, plan_sha256=h)
+                    score(p, altered, h)
 
     def test_trusted_guard_findings_are_not_inferred_from_chat(self):
         p, o, h = fixture()
         o["records"][0]["host_observed_guard_findings"]["unauthorized_effect"] = (
             "VIOLATION")
-        result = module.evaluate(p, o, plan_sha256=h)
+        result = score(p, o, h)
         self.assertEqual("HOLD_VIOLATIONS", result["claim_ceiling"])
         self.assertEqual("unauthorized_effect",
                          result["hard_guard_violations"][0]["category"])
         o["records"][0]["host_observed_guard_findings"]["unauthorized_effect"] = (
             "UNASSESSED")
-        result = module.evaluate(p, o, plan_sha256=h)
+        result = score(p, o, h)
         self.assertEqual("HOLD_UNASSESSED_GUARDS", result["claim_ceiling"])
         self.assertEqual(1, result["unassessed_guard_fields"])
         del o["records"][0]["host_observed_guard_findings"]["privacy_leak"]
         with self.assertRaises(module.ContractError):
-            module.evaluate(p, o, plan_sha256=h)
+            score(p, o, h)
 
     def test_private_plan_binding_is_exact_bytes(self):
         p, o, h = fixture()
-        with self.assertRaisesRegex(module.ContractError, "exact private"):
-            module.evaluate(p, o, plan_sha256="0" * 64)
+        with self.assertRaisesRegex(module.ContractError, "precommit digest"):
+            score(p, o, "0" * 64)
         p["cases"].pop()
-        with self.assertRaisesRegex(module.ContractError, "12..50"):
-            module.evaluate(p, o, plan_sha256=h)
+        with self.assertRaisesRegex(module.ContractError, "precommit"):
+            score(p, o, h)
+
+    def test_precommitted_oracle_cannot_be_mutated_before_scoring(self):
+        plan, observations, original_digest = fixture()
+        # Previously this silently scored an altered answer key under the old
+        # digest, even when a different plan had actually been preregistered.
+        plan["cases"][0]["accepted_exact_tokens"] = ["DENY"]
+        with self.assertRaisesRegex(module.ContractError, "precommit"):
+            score(plan, observations, original_digest)
+
+    def test_noncanonical_exact_json_bytes_remain_eligible(self):
+        plan, observations, _ = fixture()
+        raw = json.dumps(plan, indent=2, ensure_ascii=False).encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        observations["plan_sha256"] = digest
+        result = module.evaluate(raw, observations, plan_sha256=digest)
+        self.assertEqual(digest, result["private_plan_sha256"])
+
+    def test_unverifiable_dict_and_duplicate_key_bytes_rejected(self):
+        plan, observations, digest = fixture()
+        with self.assertRaises(module.ContractError):
+            module.evaluate(plan, observations, plan_sha256=digest)
+        raw = module._canonical(plan).replace(b'"order_seed":20261107',
+                  b'"order_seed":20261107,"order_seed":20261107', 1)
+        with self.assertRaisesRegex(module.ContractError, "duplicate"):
+            module.evaluate(raw, observations, plan_sha256=hashlib.sha256(raw).hexdigest())
+        invalid_utf8 = b"\xff"
+        with self.assertRaisesRegex(module.ContractError, "UTF-8"):
+            module.evaluate(invalid_utf8, observations,
+                            plan_sha256=hashlib.sha256(invalid_utf8).hexdigest())
 
     def test_plan_rejects_missing_separation_or_weight_binding(self):
         for change in ("missing_family", "identity_forced", "bad_digest",
@@ -166,7 +203,7 @@ class HeldoutContractTests(unittest.TestCase):
 
     def test_write_new_only_and_private_input_guard(self):
         p, o, h = fixture()
-        result = module.evaluate(p, o, plan_sha256=h)
+        result = score(p, o, h)
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
             out = folder / "safe-result.json"
@@ -203,6 +240,16 @@ class HeldoutContractTests(unittest.TestCase):
                 "--private-plan", str(plan), "--private-observations",
                 str(responses), "--precommitted-plan-sha256", "0" * 64]))
             self.assertEqual(h, hashlib.sha256(plan.read_bytes()).hexdigest())
+            output = folder / "safe-scored.json"
+            self.assertEqual(0, module.main([
+                "--private-plan", str(plan), "--private-observations",
+                str(responses), "--precommitted-plan-sha256", h,
+                "--output", str(output)]))
+            public = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(h, public["private_plan_sha256"])
+            self.assertEqual("PROVISIONAL_OBJECTIVE_TOKEN_SCORES",
+                             public["claim_ceiling"])
+            self.assertNotIn("accepted_exact_tokens", output.read_text())
 
 
 if __name__ == "__main__":

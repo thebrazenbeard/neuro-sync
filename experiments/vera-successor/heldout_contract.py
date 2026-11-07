@@ -47,12 +47,18 @@ def _canonical(value: object) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
-def _read_private_json(path: Path) -> tuple[dict, str]:
+def _read_private_bytes(path: Path) -> bytes:
     _require(not path.is_symlink() and path.is_file(),
              "input must be a regular file, not a symlink")
     with path.open("rb") as stream:
         raw = stream.read(MAX_PRIVATE_BYTES + 1)
     _require(len(raw) <= MAX_PRIVATE_BYTES, "private input size cap")
+    return raw
+
+
+def _parse_private_json(raw: bytes) -> dict:
+    _require(type(raw) is bytes and len(raw) <= MAX_PRIVATE_BYTES,
+             "private JSON input must be bounded raw bytes")
     def no_duplicate_keys(items: list[tuple[str, object]]) -> dict:
         out = {}
         for key, value in items:
@@ -60,13 +66,19 @@ def _read_private_json(path: Path) -> tuple[dict, str]:
             out[key] = value
         return out
     try:
-        value = json.loads(raw, object_pairs_hook=no_duplicate_keys)
+        value = json.loads(raw.decode("utf-8"),
+                           object_pairs_hook=no_duplicate_keys)
     except ContractError:
         raise
     except (UnicodeError, ValueError) as exc:
         raise ContractError("invalid UTF-8 JSON input") from exc
     _require(type(value) is dict, "private JSON root must be object")
-    return value, _sha256(raw)
+    return value
+
+
+def _read_private_json(path: Path) -> tuple[dict, str]:
+    raw = _read_private_bytes(path)
+    return _parse_private_json(raw), _sha256(raw)
 
 
 def schedule(case_ids: list[str], seed: int) -> list[dict]:
@@ -145,7 +157,19 @@ def validate_plan(plan: dict) -> tuple[list[dict], dict, list[dict]]:
     return ordered, by_id, cases
 
 
-def evaluate(plan: dict, observations: dict, *, plan_sha256: str) -> dict:
+def evaluate(plan_bytes: bytes, observations: dict, *, plan_sha256: str) -> dict:
+    """Score only a plan parsed from bytes matching the exact precommit.
+
+    Dictionaries cannot prove their original encoding or preregistration.
+    Require the actual raw file bytes; arbitrary valid UTF-8 JSON formatting
+    remains eligible without changing the SHA-256 commitment semantics.
+    """
+    _require(type(plan_bytes) is bytes and len(plan_bytes) <= MAX_PRIVATE_BYTES,
+             "private plan must be supplied as bounded exact bytes")
+    _require(type(plan_sha256) is str and bool(SHA.fullmatch(plan_sha256))
+             and _sha256(plan_bytes) == plan_sha256,
+             "private plan bytes differ from external precommit digest")
+    plan = _parse_private_json(plan_bytes)
     ordered, by_id, cases = validate_plan(plan)
     _require(observations.get("schema") == SCHEMA,
              "observation schema mismatch")
@@ -263,13 +287,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        plan, digest = _read_private_json(args.private_plan)
+        plan_raw = _read_private_bytes(args.private_plan)
+        digest = _sha256(plan_raw)
         _require(type(args.precommitted_plan_sha256) is str
                  and bool(SHA.fullmatch(args.precommitted_plan_sha256))
                  and digest == args.precommitted_plan_sha256,
                  "private plan differs from external precommit digest")
         observations, _ = _read_private_json(args.private_observations)
-        result = evaluate(plan, observations, plan_sha256=digest)
+        result = evaluate(plan_raw, observations, plan_sha256=digest)
         if args.output:
             _write_new(args.output, result)
         else:
