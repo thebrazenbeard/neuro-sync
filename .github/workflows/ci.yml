@@ -57,6 +57,11 @@ jobs:
       - name: Verify durable clock authority rollback and fail-closed controls
         run: test -f tests/test_bus_clock_floor.py && PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_clock_floor.py' -v
 
+      # Draft PRs can introduce new test_*.py modules which the named checks
+      # above do not collect. Keep this catch-all as a forward coverage gate.
+      - name: Verify all root library test modules, including new PR tests
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_*.py' -v
+
       - name: Verify read-only recovery diagnostics and historical-restore falsifiers
         run: |
           test -f tests/test_bus_recovery_preflight.py
@@ -81,3 +86,24 @@ jobs:
 
       - name: Verify scenario-unit statistics and malformed receipt controls
         run: python3 -m unittest discover -s experiments/real-model-sync/statistics -p 'test_*.py' -v
+
+      - name: Verify all experiment suites, including newly added nested tests
+        run: |
+          PYTHONPATH=src python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          suites = sorted({p.parent for p in Path('experiments').rglob('test_*.py')})
+          if not suites:
+              raise SystemExit('No experiment suites discovered')
+          for suite in suites:
+              print(f'\n=== Test discovery: {suite} ===', flush=True)
+              subprocess.run(
+                  [sys.executable, '-m', 'unittest', 'discover', '-s',
+                   str(suite), '-p', 'test_*.py', '-v'],
+                  env=os.environ,
+                  check=True,
+              )
+          PY
