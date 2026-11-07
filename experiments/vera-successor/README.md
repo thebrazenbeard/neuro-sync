@@ -64,6 +64,55 @@ Test without a model or network:
 python3 -m unittest discover -s experiments/vera-successor -p 'test_*.py' -v
 ```
 
+## Paired conversational evaluation (source candidate)
+
+`paired_probe.py` extends the original three-call plumbing test into an
+explicit **untouched-base versus context-alias** comparison. Its fixed,
+synthetic cases include real multi-request correction carryover (the previous
+assistant answer is captured from the model), memory honesty, invented facts,
+quoted prompt injection, technical reasoning, and conversational style. Both
+tags use the same decoding settings. This is diagnostic evidence, not a
+training procedure or a proof of Vera identity continuity.
+
+```shell
+# Offline preview: no Ollama call.
+python3 experiments/vera-successor/paired_probe.py
+
+# Only when Lappy has a verified, idle execution window: obtain its available
+# memory independently and supply the measured amount in MiB. The runner
+# refuses to compete with a model already loaded in Ollama.
+python3 experiments/vera-successor/paired_probe.py \
+  --execute --free-ram-mib 4096 \
+  --include-responses --output /private/local/path/paired-evidence.json
+
+# Locally inspect conservative, scoped heuristic checks. This does NOT replace
+# blind manual assessment of reasoning, science, safety, or voice quality.
+python3 experiments/vera-successor/assess.py \
+  --input /private/local/path/paired-evidence.json
+```
+
+The `4096` value is an **example**, not a measured Lappy resource claim;
+never substitute it for current host readback. Executing without an explicit
+free-RAM observation is refused, but that observation is operator-reported,
+not independently measured by this script. The runner requests model unload
+with `keep_alive: 0`; if a request times out, actual unloading cannot be
+asserted from the failed response. The runner records
+Ollama-reported model digests, request/answer hashes, individual turn
+completion, and relevant resource assumptions. The optional raw answer
+receipt must remain private and is never needed for GitHub CI. The assessor
+does not export answer bodies or independently authenticate submitted
+receipts. For open-ended answers, it reports `UNVERIFIED` (including positive
+lexical hints) or `FLAGGED` for contradictions worth reviewing. It awards a
+mechanical `PASS` only for a narrowly specified exact correction answer;
+none of these statuses proves semantic quality, improved personality, or
+training. Independent blind answer review is still necessary. Do not include
+these test prompts in subsequent training data.
+
+On the most recent live host check, Lappy had insufficient free RAM for an
+uncontended full paired run and a different Qwen model was already loaded.
+No competing model was stopped or unloaded. The next full physical evaluation
+remains pending a separately verified idle window.
+
 ## Observed Lappy starting point (separate evidence class)
 
 The coordinating agent reported these **live host probes** on Lappy during
