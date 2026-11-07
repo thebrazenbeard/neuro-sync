@@ -98,3 +98,6 @@ PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_effect_gate.py
 
 Record exact source head and test results. A PASS on these fixtures is not a
 real clock qualification or independent OS-host attestation.
+
+See [read-only recovery preflight](RECOVERY_PREFLIGHT.md) for structural
+diagnostics and explicit historical-restore limitations.
