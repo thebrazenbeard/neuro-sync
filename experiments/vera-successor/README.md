@@ -57,6 +57,11 @@ HTTP, no proxy or redirection logic is used, requests and responses are byte
 bounded, and no authentication credentials are accepted. A successful response
 identifies the Ollama-reported installed tag digest; it does **not** independently
 attest the underlying weight bytes or prove a cold process restart.
+Before each inference request, this basic probe refuses Ollama process state
+that reports a loaded tag other than the requested target. Malformed process
+inventory also blocks execution. These momentary checks do **not** establish
+an exclusive host lease or prevent another client racing between checks;
+actual execution still requires an independently verified idle window.
 
 Test without a model or network:
 

@@ -123,12 +123,32 @@ def _installed_model(tags: dict, model: str) -> dict:
     raise ProbeError("requested exact model tag not installed or digest unavailable")
 
 
-def _is_loaded(process_state: dict, model: str) -> bool:
+def _loaded_models(process_state: dict) -> set[str]:
     models = process_state.get("models")
     if type(models) is not list:
         raise ProbeError("Ollama process state missing models")
-    return any(type(item) is dict and item.get("name") == model
-               for item in models)
+    names: set[str] = set()
+    for item in models:
+        if (type(item) is not dict or type(item.get("name")) is not str
+                or not MODEL_RE.fullmatch(item["name"])):
+            raise ProbeError("invalid Ollama loaded-model row")
+        names.add(item["name"])
+    return names
+
+
+def _preflight_loaded(host: str, port: int, model: str,
+                      timeout_seconds: float) -> bool:
+    """Refuse known competitor residency before requesting a new model load.
+
+    This is a momentary local process-list check, not an exclusive host lease.
+    Other Ollama clients may still race the check; host coordination remains
+    an operator responsibility for physical experiments.
+    """
+    active = _loaded_models(request_json(
+        host, port, "GET", "/api/ps", None, timeout_seconds))
+    if active - {model}:
+        raise ProbeError("competing loaded Ollama model; no eviction permitted")
+    return model in active
 
 
 SCENARIOS = (
@@ -193,10 +213,10 @@ def probe(*, endpoint: str, model: str, profile_path: str | None = None,
         model)
     receipt["ollama_reported_manifest_digest"] = installed["digest"]
     receipt["ollama_reported_model_size_bytes"] = installed["size_bytes"]
-    receipt["requested_tag_preloaded_before"] = _is_loaded(
-        request_json(host, port, "GET", "/api/ps", None, timeout_seconds),
-        model)
+    receipt["requested_tag_preloaded_before"] = _preflight_loaded(
+        host, port, model, timeout_seconds)
     for name, script in SCENARIOS:
+        _preflight_loaded(host, port, model, timeout_seconds)
         messages = ([{"role": "system", "content": profile}]
                     if profile is not None else []) + list(script)
         request = {"model": model, "messages": messages, "stream": False,
@@ -229,9 +249,8 @@ def probe(*, endpoint: str, model: str, profile_path: str | None = None,
         if include_responses:
             row["response"] = answer
         receipt["scenarios"].append(row)
-    receipt["requested_tag_present_after"] = _is_loaded(
-        request_json(host, port, "GET", "/api/ps", None, timeout_seconds),
-        model)
+    receipt["requested_tag_present_after"] = _preflight_loaded(
+        host, port, model, timeout_seconds)
     receipt["requested_tag_load_transition_observed"] = (
         not receipt["requested_tag_preloaded_before"]
         and receipt["requested_tag_present_after"])
