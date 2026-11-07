@@ -112,6 +112,42 @@ class PEFTPreflightTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     inspect_peft_lora_artifacts(self.root)
 
+    def test_rejects_unmodeled_peft_initializers_selectors_and_training_shapes(self):
+        # These are not equivalent to the ordinary A/B adapter-only semantics
+        # represented by this source-only inspector. In particular OLoRA can
+        # modify the reference base model during initialization.
+        for update in (
+            {"init_lora_weights": "olora"},
+            {"init_lora_weights": "pissa"},
+            {"init_lora_weights": False},
+            {"lora_bias": True},
+            {"lora_dropout": "0.25"},
+            {"target_parameters": ["lm_head.weight"]},
+            {"exclude_modules": ["q_proj"]},
+            {"layers_to_transform": [0]},
+            {"layers_pattern": ["layers"]},
+            {"ensure_weight_tying": True},
+        ):
+            with self.subTest(update=update):
+                self.write_artifacts(config_text=json.dumps({**self.config, **update}))
+                with self.assertRaises(ValueError):
+                    inspect_peft_lora_artifacts(self.root)
+
+        # Ordinary LoRA dropout changes training-time activations but not
+        # interpretation of saved inference-time A/B matrix semantics.
+        self.write_artifacts(config_text=json.dumps({**self.config, "lora_dropout": 0.25,
+                                                      "init_lora_weights": True}))
+        self.assertTrue(inspect_peft_lora_artifacts(self.root)["candidate_only"])
+
+    def test_rejects_malformed_empty_module_segments_in_tensor_names(self):
+        bad_header = {
+            name.replace("model.layers", "model..layers"): record
+            for name, record in self.tensors.items()
+        }
+        self.write_artifacts(header=bad_header)
+        with self.assertRaises(ValueError):
+            inspect_peft_lora_artifacts(self.root)
+
     @unittest.skipUnless(os.name == "posix", "POSIX symlink fixture")
     def test_refuses_symlinked_ancestor_directory(self):
         alias = self.root.parent / (self.root.name + "-alias-parent")

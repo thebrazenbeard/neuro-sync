@@ -23,7 +23,10 @@ MAX_CONFIG = 1_000_000
 MAX_TENSORS = 20_000
 MAX_ADAPTER_BYTES = 4 * (1 << 30)
 _FLOAT_DTYPES = {"F16": 2, "BF16": 2, "F32": 4, "F64": 8}
-_LORA_NAME = re.compile(r"(?P<module>[A-Za-z0-9_.]+)\.lora_(?P<side>[AB])(?:\.default)?\.weight")
+_LORA_NAME = re.compile(
+    r"(?P<module>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)"
+    r"\.lora_(?P<side>[AB])(?:\.default)?\.weight"
+)
 _IMMUTABLE_REVISION = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?")
 _SIMPLE_MODULE = re.compile(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*")
 
@@ -140,13 +143,30 @@ def _read_config(fd: int, size: int) -> dict:
         raise ValueError("only adapter-only bias=none supported")
     if config.get("fan_in_fan_out", False) is not False:
         raise ValueError("transposed fan_in_fan_out orientation requires a separate verifier")
+    # The emitted A/B tensor metadata alone cannot reconstruct all PEFT
+    # initialization/selection options. In particular OLoRA changes base
+    # weights during initialization, so ordinary frozen-base assumptions fail.
+    # Treat absent fields as their standard defaults, but fail on extensions.
+    if config.get("init_lora_weights", True) is not True:
+        raise ValueError("nonstandard LoRA initialization requires a separate verifier")
+    if config.get("lora_bias", False) is not False or config.get(
+            "ensure_weight_tying", False) is not False:
+        raise ValueError("extra LoRA bias or weight tying requires a separate verifier")
+    dropout = config.get("lora_dropout", 0.0)
+    if (type(dropout) not in (int, float) or not math.isfinite(dropout) or
+            not 0 <= dropout < 1):
+        raise ValueError("LoRA dropout must be a finite rate in [0,1)")
     # Specialized variants require their own independently reviewed math and
     # keys. Reject rather than silently treating their weights as ordinary LoRA.
     for flag in ("use_dora", "use_rslora", "use_qalora"):
         if config.get(flag):
             raise ValueError(f"unsupported PEFT variant: {flag}")
     for field in ("modules_to_save", "rank_pattern", "alpha_pattern", "loftq_config",
-                  "trainable_token_indices", "layer_replication"):
+                  "trainable_token_indices", "layer_replication", "target_parameters",
+                  "exclude_modules", "layers_to_transform", "layers_pattern",
+                  "eva_config", "corda_config", "lora_ga_config", "velora_config",
+                  "alora_invocation_tokens", "monteclora_config", "use_bdlora",
+                  "arrow_config", "kasa_config", "megatron_config"):
         if config.get(field):
             raise ValueError(f"unsupported PEFT extension: {field}")
     return config

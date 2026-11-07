@@ -17,6 +17,13 @@ safetensors header and contiguous data byte ranges; no duplicate JSON keys;
 supported BF16/F16/F32/F64 two-dimensional LoRA A/B matrices; pairwise dtype,
 rank and module target agreement; integer rank, alpha and ordinary LoRA
 configuration; and an explicit immutable-looking base revision string.
+The tensor-name grammar also forbids empty module path segments. The config
+preflight rejects unmodeled PEFT initializers (such as OLoRA/PiSSA), bias and
+weight-tying extensions, invalid dropout values, alternate target selectors,
+and additional architecture/adapter extensions. These options may be valid
+in PEFT itself; their interpretation is **not established by this narrow
+inspector**. OLoRA in particular can change base weights at initialization,
+so treating its output as an ordinary frozen-base LoRA delta would be unsafe.
 
 ## Bounded filesystem observation
 
@@ -68,5 +75,6 @@ separate. This routine must never be used to flip TRAININGDAY's HOLD to READY.
 
 - [Safetensors official format](https://github.com/huggingface/safetensors/blob/main/README.md#format): 8-byte header length, JSON tensor map, data offsets, no holes or duplicate keys.
 - [Hugging Face PEFT checkpoint format](https://huggingface.co/docs/peft/developer_guides/checkpoint): `adapter_config.json`, adapter weights, LoRA A/B factor naming, and the need for the original base model.
+- [Hugging Face PEFT LoRA configuration](https://huggingface.co/docs/peft/package_reference/lora): initializer behavior, bias and targeting extensions, and OLoRA base-weight mutation.
 
 Tests use **synthetic headers and zero bytes only**, never real model weights.
