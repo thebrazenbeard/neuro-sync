@@ -141,6 +141,24 @@ class AdapterOnlyProposalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "size.*digest|digest.*size"):
             propose_adapter_only_transfer(changed)
 
+    def test_manifest_bytes_cannot_alias_weight_config_or_tokenizer_roles(self):
+        aliases = {
+            "base_weights": (sha("1"), 1000000),
+            "base_tokenizer": (sha("2"), 2000),
+            "base_config": (sha("3"), 2000),
+            "adapter_weights": (sha("4"), 70000),
+            "adapter_config": (sha("5"), 500),
+        }
+        for manifest in ("train_manifest", "sealed_holdout_manifest",
+                         "shuffled_control_manifest"):
+            for kind, (digest, size) in aliases.items():
+                changed = intent()
+                changed["input_artifacts"][manifest] = {"sha256": digest,
+                                                         "size_bytes": size}
+                with self.subTest(manifest=manifest, alias=kind), \
+                        self.assertRaisesRegex(ValueError, "alias"):
+                    propose_adapter_only_transfer(changed)
+
     def test_target_map_digest_matches_documented_peft_join_encoding(self):
         target = intent()["adapter"]["target_map"]
         reference = hashlib.sha256(json.dumps(target, sort_keys=True,

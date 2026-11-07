@@ -28,6 +28,8 @@ accepts a separately typed `NEUROSYNC_PEFT_ADAPTER_ONLY_INTENT_V1`:
   the proposed format documented by the PEFT inspector/binding Drafts #38/#48.
   Consecutive dots and ambiguously overlapping target suffixes fail closed.
 - Distinct train, protected holdout and shuffled-control references;
+  none may alias any of the five weight/tokenizer/config roles even when
+  the caller invents coherent identical SHA-256 and byte-size declarations;
   declared rights provenance; donor-disconnected, cold recipient reload; $0
   external cost and bounded local GPU minutes.
 - Optional **untrusted optimizer receipt reference**, which never elevates the

@@ -138,6 +138,12 @@ def propose_adapter_only_transfer(intent: dict) -> dict:
                  ("train_manifest", "sealed_holdout_manifest",
                   "shuffled_control_manifest")}) == 3,
              "train/holdout/shuffle split collision")
+    manifest_digests = tuple(artifacts[role]["sha256"] for role in
+                             ("train_manifest", "sealed_holdout_manifest",
+                              "shuffled_control_manifest"))
+    _require(len(set(artifact_roles + manifest_digests)) ==
+             len(artifact_roles) + len(manifest_digests),
+             "manifest bytes must not alias weight, tokenizer or config artifact roles")
 
     provenance = _keys(intent["training_provenance"], {
         "source_revision_sha256", "optimizer_receipt_sha256", "status"
