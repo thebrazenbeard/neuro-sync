@@ -17,6 +17,18 @@ from pathlib import Path
 from typing import Literal
 
 
+# Exact SQLite master DDL emitted by Draft #56's paired consumption journal.
+# Pinning this form deliberately refuses alternate conflict policies rather
+# than trying to infer replay behavior from a column/PK shape alone.
+_EXPECTED_JOURNAL_DDL = (
+    "CREATE TABLE consumed_plan_grants ("
+    "principal TEXT NOT NULL,target TEXT NOT NULL,"
+    "session TEXT NOT NULL,grant_id TEXT NOT NULL,"
+    "invocation_id TEXT NOT NULL,"
+    "PRIMARY KEY(principal,target,session,grant_id))"
+)
+
+
 @dataclass(frozen=True)
 class PairPreflight:
     classification: Literal["BLOCKED", "STRUCTURALLY_COMPATIBLE_UNATTESTED"]
@@ -25,6 +37,10 @@ class PairPreflight:
     findings: tuple[str, ...]
     has_v2_grants: bool | None
     last_observed_epoch: float | None
+    consumption_journal_status: Literal[
+        "NOT_INSPECTED", "LEGACY_UNCHECKED", "REQUIRED_JOURNAL_MISSING",
+        "INVALID_JOURNAL", "STRUCTURE_PRESENT_UNATTESTED",
+    ]
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, allow_nan=False)
@@ -86,6 +102,7 @@ def inspect_clock_pair(authority_path: str | Path) -> PairPreflight:
     findings: list[str] = []
     has_grants: bool | None = None
     floor: float | None = None
+    journal_status = "NOT_INSPECTED"
     try:
         with closing(_read_only(main)) as db:
             _require_columns(db, "plan_clock_binding",
@@ -121,6 +138,54 @@ def inspect_clock_pair(authority_path: str | Path) -> PairPreflight:
                 ).fetchone()
                 if stored is None or stored["binding_uuid"] != binding["binding_uuid"]:
                     raise ValueError("clock sidecar binding missing or mismatched")
+                clock_columns = {row["name"] for row in clock_db.execute(
+                    "PRAGMA table_info(clock_state)")}
+                journal = clock_db.execute(
+                    "SELECT type,sql FROM sqlite_master WHERE name='consumed_plan_grants'"
+                ).fetchone()
+                if "consumption_journal_ready" not in clock_columns:
+                    journal_status = "LEGACY_UNCHECKED"
+                    if journal is not None:
+                        journal_status = "INVALID_JOURNAL"
+                        raise ValueError("unmarked consumption journal is ambiguous")
+                    findings.append("consumption_journal_unchecked_legacy_schema")
+                else:
+                    marker = clock_db.execute(
+                        "SELECT consumption_journal_ready FROM clock_state "
+                        "WHERE singleton=1").fetchone()
+                    if marker is None or type(marker[0]) is not int or marker[0] != 1:
+                        journal_status = "INVALID_JOURNAL"
+                        raise ValueError("consumption journal marker not READY")
+                    if journal is None:
+                        journal_status = "REQUIRED_JOURNAL_MISSING"
+                        raise ValueError("consumption_journal_missing_after_ready_marker")
+                    journal_status = "INVALID_JOURNAL"
+                    if journal["type"] != "table":
+                        raise ValueError("consumption journal is not a table")
+                    if journal["sql"] != _EXPECTED_JOURNAL_DDL:
+                        raise ValueError("consumption journal DDL conflict policy unknown")
+                    if clock_db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                        "AND tbl_name='consumed_plan_grants' LIMIT 1"
+                    ).fetchone() is not None:
+                        raise ValueError("consumption journal trigger forbidden")
+                    _require_columns(clock_db, "consumed_plan_grants", {
+                        "principal", "target", "session", "grant_id", "invocation_id",
+                    })
+                    # #56's replay denial relies on this exact composite PK;
+                    # column names alone would accept a duplicate-friendly
+                    # replacement table and misleadingly claim compatibility.
+                    journal_columns = {row["name"]: row for row in clock_db.execute(
+                        "PRAGMA table_info(consumed_plan_grants)")}
+                    replay_key = ("principal", "target", "session", "grant_id")
+                    if any(journal_columns[name]["pk"] != position or
+                           journal_columns[name]["notnull"] != 1
+                           for position, name in enumerate(replay_key, 1)) or (
+                               journal_columns["invocation_id"]["pk"] != 0 or
+                               journal_columns["invocation_id"]["notnull"] != 1):
+                        raise ValueError("consumption journal replay key malformed")
+                    journal_status = "STRUCTURE_PRESENT_UNATTESTED"
+                    findings.append("consumption_journal_custody_unattested")
                 candidate = stored["last_observed_epoch"]
                 if candidate is None:
                     if has_grants:
@@ -139,6 +204,7 @@ def inspect_clock_pair(authority_path: str | Path) -> PairPreflight:
             findings=tuple(findings),
             has_v2_grants=has_grants,
             last_observed_epoch=None,
+            consumption_journal_status=journal_status,
         )
 
     # A concurrent writer may switch journal mode after our initial checks.
@@ -155,6 +221,7 @@ def inspect_clock_pair(authority_path: str | Path) -> PairPreflight:
             findings=(f"postread_journal_check_failed:{type(exc).__name__}:{exc}",),
             has_v2_grants=has_grants,
             last_observed_epoch=None,
+            consumption_journal_status=journal_status,
         )
     findings.extend((
         "preflight_requires_quiesced_rollback_journal_mode",
@@ -171,6 +238,7 @@ def inspect_clock_pair(authority_path: str | Path) -> PairPreflight:
         findings=tuple(findings),
         has_v2_grants=has_grants,
         last_observed_epoch=floor,
+        consumption_journal_status=journal_status,
     )
 
 

@@ -44,14 +44,110 @@ class PairPreflightTests(unittest.TestCase):
             db.execute("UPDATE clock_state SET last_observed_epoch=? WHERE singleton=1",
                        (value,))
 
+    def _mark_consumption_journal(self, *, ready=1, table=True):
+        """Synthetic shape from Draft #56; not a trusted host witness."""
+        with sqlite3.connect(self.sidecar) as db:
+            db.execute("ALTER TABLE clock_state ADD COLUMN "
+                       "consumption_journal_ready INTEGER NOT NULL DEFAULT 0")
+            db.execute("UPDATE clock_state SET consumption_journal_ready=? "
+                       "WHERE singleton=1", (ready,))
+            if table:
+                db.execute("CREATE TABLE consumed_plan_grants ("
+                           "principal TEXT NOT NULL,target TEXT NOT NULL,"
+                           "session TEXT NOT NULL,grant_id TEXT NOT NULL,"
+                           "invocation_id TEXT NOT NULL,"
+                           "PRIMARY KEY(principal,target,session,grant_id))")
+
     def test_compatible_pair_is_not_claimed_fresh(self):
         report = inspect_clock_pair(self.path)
         self.assertEqual(report.classification, "STRUCTURALLY_COMPATIBLE_UNATTESTED")
+        self.assertEqual(report.consumption_journal_status, "LEGACY_UNCHECKED")
         self.assertEqual(report.authority_effect, "NO_INTENTIONAL_AUTHORITY_DB_WRITE")
         self.assertEqual(report.last_observed_epoch, 250.0)
         self.assertTrue(report.has_v2_grants)
         self.assertIn("historical_same_uuid_restore_not_detectable", report.findings)
         self.assertEqual(json.loads(report.to_json())["last_observed_epoch"], 250)
+
+    def test_marked_consumption_journal_missing_blocks_without_repair(self):
+        # #56's execute_plan refuses this partial-sidecar rollback; preflight
+        # must not report compatibility simply because old clock columns fit.
+        self._mark_consumption_journal(table=True)
+        with sqlite3.connect(self.sidecar) as db:
+            db.execute("DROP TABLE consumed_plan_grants")
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "BLOCKED")
+        self.assertEqual(report.consumption_journal_status,
+                         "REQUIRED_JOURNAL_MISSING")
+        self.assertIn("consumption_journal_missing_after_ready_marker",
+                      " ".join(report.findings))
+        with sqlite3.connect(self.sidecar) as db:
+            self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master "
+                                         "WHERE type='table' AND name='consumed_plan_grants'").fetchone())
+
+    def test_marked_journal_structure_only_is_not_authority(self):
+        self._mark_consumption_journal()
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "STRUCTURALLY_COMPATIBLE_UNATTESTED")
+        self.assertEqual(report.consumption_journal_status,
+                         "STRUCTURE_PRESENT_UNATTESTED")
+        self.assertIn("consumption_journal_custody_unattested", report.findings)
+
+    def test_unready_consumption_marker_fails_closed(self):
+        self._mark_consumption_journal(ready=0)
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "BLOCKED")
+        self.assertEqual(report.consumption_journal_status, "INVALID_JOURNAL")
+
+    def test_unmarked_journal_table_fails_closed(self):
+        with sqlite3.connect(self.sidecar) as db:
+            db.execute("CREATE TABLE consumed_plan_grants ("
+                       "principal TEXT,target TEXT,session TEXT,grant_id TEXT,"
+                       "invocation_id TEXT)")
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "BLOCKED")
+        self.assertEqual(report.consumption_journal_status, "INVALID_JOURNAL")
+
+    def test_marked_journal_without_replay_unique_key_blocks(self):
+        self._mark_consumption_journal(table=False)
+        with sqlite3.connect(self.sidecar) as db:
+            db.execute("CREATE TABLE consumed_plan_grants ("
+                       "principal TEXT,target TEXT,session TEXT,grant_id TEXT,"
+                       "invocation_id TEXT)")
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "BLOCKED")
+        self.assertEqual(report.consumption_journal_status, "INVALID_JOURNAL")
+
+    def test_journal_replace_conflict_policy_cannot_masquerade_as_replay_key(self):
+        # A seemingly correct composite PK with ON CONFLICT REPLACE destroys
+        # the duplicate-INSERT exception relied on by Draft #56's replay gate.
+        self._mark_consumption_journal(table=False)
+        with sqlite3.connect(self.sidecar) as db:
+            db.execute("CREATE TABLE consumed_plan_grants ("
+                       "principal TEXT NOT NULL,target TEXT NOT NULL,"
+                       "session TEXT NOT NULL,grant_id TEXT NOT NULL,"
+                       "invocation_id TEXT NOT NULL,"
+                       "PRIMARY KEY(principal,target,session,grant_id) "
+                       "ON CONFLICT REPLACE)")
+            insert = ("INSERT INTO consumed_plan_grants "
+                      "(principal,target,session,grant_id,invocation_id) "
+                      "VALUES('h','r','s','one',?)")
+            db.execute(insert, ("first",))
+            db.execute(insert, ("second",))
+            self.assertEqual(db.execute(
+                "SELECT invocation_id FROM consumed_plan_grants"
+            ).fetchone()[0], "second")
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "BLOCKED")
+        self.assertEqual(report.consumption_journal_status, "INVALID_JOURNAL")
+
+    def test_journal_trigger_can_suppress_consumption_and_must_block(self):
+        self._mark_consumption_journal()
+        with sqlite3.connect(self.sidecar) as db:
+            db.execute("CREATE TRIGGER ignore_replay BEFORE INSERT "
+                       "ON consumed_plan_grants BEGIN SELECT RAISE(IGNORE); END")
+        report = inspect_clock_pair(self.path)
+        self.assertEqual(report.classification, "BLOCKED")
+        self.assertEqual(report.consumption_journal_status, "INVALID_JOURNAL")
 
     def test_valid_historical_sidecar_remains_undetectable(self):
         # Both files are structurally valid, but sidecar floor 100 could be
