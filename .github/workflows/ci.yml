@@ -64,6 +64,12 @@ jobs:
           PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_recovery_preflight.py' -v
           PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_recovery_falsifiers.py' -v
 
+      - name: Verify source-only authorization witness reference and falsifiers
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_authorization_witness.py' -v
+
+      - name: Verify source-only v3 witnessed broker composition and rollback falsifiers
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_bus_witness_effect_gate.py' -v
+
       - name: Verify both zero-weight scripted and randomized causal pilots
         run: python3 -m unittest discover -s experiments/zero-weight-sync -p 'test_*.py' -v
 
