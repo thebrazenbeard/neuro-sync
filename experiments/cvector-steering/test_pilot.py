@@ -1,9 +1,12 @@
 """Pure-source tests: never launch model, process, or network."""
 
 import copy
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
-from pilot import ARM_NAMES, PlanHold, build_plan
+from pilot import ARM_NAMES, PlanHold, build_plan, load_spec, MAX_SPEC_BYTES
 
 
 def fixture():
@@ -16,7 +19,7 @@ def fixture():
         "model_id": "Qwen/Qwen3.5-0.8B", "runtime_build": "6" * 64,
         "positive": [f"Inspect the source of a claim {i}." for i in range(7)],
         "negative": [f"Invent evidence to confirm a claim {i}." for i in range(7)],
-        "heldouts": [f"Assess an unfamiliar engineering hypothesis {i}." for i in range(7)],
+        "heldouts": [f"Assess an unfamiliar engineering hypothesis {i}." for i in range(9)],
         "persona": "Identify uncertainty and test alternative explanations.",
         "seed": 17, "max_tokens": 64, "vector_scale": 0.5,
     }
@@ -25,34 +28,61 @@ def fixture():
 class SourcePlanTests(unittest.TestCase):
     def test_inert_counterbalanced_plan(self):
         plan = build_plan(fixture())
-        self.assertEqual(plan["arms_count"], 49)
+        self.assertEqual(plan["arms_count"], 81)
         self.assertEqual(plan["model_calls"], 0)
         self.assertEqual(plan["weight_updates"], 0)
         self.assertEqual(plan["semantic_effect"], "NOT_TESTED")
         self.assertEqual(plan["identity_transfer"], "NOT_ESTABLISHED")
         self.assertTrue(all(not x["will_execute"] for x in plan["plan"]))
-        for i in range(7):
+        for i in range(9):
             self.assertEqual(set(x["arm"] for x in plan["plan"] if x["scenario"] == i),
                              set(ARM_NAMES))
-        # Each arm appears in each ordinal position once over seven scenarios.
-        for position in range(7):
-            self.assertEqual(set(plan["plan"][i * 7 + position]["arm"]
-                                 for i in range(7)), set(ARM_NAMES))
+        # Each arm appears in each ordinal position once over nine scenarios.
+        for position in range(9):
+            self.assertEqual(set(plan["plan"][i * 9 + position]["arm"]
+                                 for i in range(9)), set(ARM_NAMES))
 
     def test_prompt_and_vector_arms_are_separate(self):
         plan = build_plan(fixture())
         cases = {x["arm"]: x["argv"] for x in plan["plan"] if x["scenario"] == 0}
         for arm in ("N", "P"):
             self.assertNotIn("--control-vector-scaled", cases[arm])
-        for arm in ("V_PLUS", "V_MINUS", "V_ZERO", "V_SHAM", "PV_PLUS"):
+        for arm in ("V_PLUS", "V_MINUS", "V_ZERO", "V_SHAM", "PV_PLUS", "PV_ZERO", "PV_SHAM"):
             self.assertIn("--control-vector-scaled", cases[arm])
         self.assertNotIn("Identify uncertainty", cases["N"])
-        self.assertIn("Identify uncertainty", cases["P"][cases["P"].index("-p") + 1])
+        self.assertEqual(cases["P"][cases["P"].index("-p") + 1], "<PRIVATE_PROMPT_INJECT_LOCALLY>")
         vec = {arm: cases[arm][-1] for arm in ("V_PLUS", "V_MINUS", "V_ZERO", "V_SHAM")}
         self.assertTrue(vec["V_PLUS"].endswith(":0.5"))
         self.assertTrue(vec["V_MINUS"].endswith(":-0.5"))
         self.assertTrue(vec["V_ZERO"].endswith(":0"))
         self.assertIn("sham_vector.gguf", vec["V_SHAM"])
+        self.assertTrue(cases["PV_ZERO"][-1].endswith(":0"))
+        self.assertIn("sham_vector.gguf", cases["PV_SHAM"][-1])
+
+    def test_prompt_redaction_default_and_explicit_private(self):
+        spec = fixture()
+        public_plan = build_plan(spec)
+        serialized = json.dumps(public_plan)
+        self.assertNotIn(spec["heldouts"][0], serialized)
+        self.assertNotIn(spec["persona"], serialized)
+        self.assertEqual(public_plan["prompt_privacy"], "REDACTED_PROMPT_TEMPLATES")
+        private = build_plan(spec, emit_private_prompts=True)
+        self.assertIn(spec["heldouts"][0], json.dumps(private))
+        self.assertEqual(private["prompt_privacy"], "PRIVATE_RAW_PROMPTS_DO_NOT_PUBLISH")
+        self.assertFalse(private["plan"][0]["contains_unresolved_prompt_placeholder"])
+
+    def test_bounded_json_duplicate_fields_and_nonfinite(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "spec.json"
+            path.write_text('{"seed":1,"seed":2}', encoding="utf-8")
+            with self.assertRaisesRegex(PlanHold, "duplicate_json_field"):
+                load_spec(path)
+            path.write_text('{"seed":NaN}', encoding="utf-8")
+            with self.assertRaisesRegex(PlanHold, "invalid_json_constant"):
+                load_spec(path)
+            path.write_bytes(b" " * (MAX_SPEC_BYTES + 1))
+            with self.assertRaisesRegex(PlanHold, "spec_oversize"):
+                load_spec(path)
 
     def test_deterministic_and_distinct_spec_hash(self):
         a = fixture()
