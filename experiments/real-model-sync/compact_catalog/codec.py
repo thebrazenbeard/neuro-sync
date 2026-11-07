@@ -33,7 +33,7 @@ HANDLE = re.compile(r"cap-[0-9a-f]{16}\Z")
 PROBE_INPUTS = ("-3", "2", "12")
 
 TASK_DESCRIPTION = (
-    "Starting from integer 'start', reach 'goal' using at most two ordered tools; "
+    "Starting from integer 'start', reach 'goal' using one or two ordered tools; "
     "abstain if not possible or not authorized."
 )
 OUTPUT_SCHEMA = {

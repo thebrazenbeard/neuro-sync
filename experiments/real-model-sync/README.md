@@ -8,6 +8,16 @@ The donor is still a **scripted synthetic capability catalog**, not another
 neural model. A live run therefore measures *receiver use of external state*,
 not inter-neural knowledge transfer.
 
+**Fresh-suite format:** `neuro-sync-local-receiver-v1`. Existing v0 sealed
+suites/receipts cannot be reinterpreted as v1; freeze a new suite before any
+new host experiment. A 12-case v1 suite has four true one-tool solvable,
+six true minimum-two-tool solvable, and two provably unreachable near-miss
+cases, randomized after a guaranteed possible one-step/two-step preflight
+pair. All goals fall within [-50,50] to avoid a magnitude-only negative label
+shortcut. No zero-tool `goal==start` puzzles or 1e9 negative-answer sentinel.
+The internal `capabilities.local_receiver_v0` StateLedger key name remains
+unchanged for wire compatibility; it is **not** the suite-schema version.
+
 ## Steps
 
 From repository root, when an already-running local Ollama or OpenAI-compatible
@@ -42,12 +52,14 @@ profile, token cap and timeout are applied **identically to every arm**. This
 removes redundant task/schema prose but does **not** shorten any arm's data,
 reveal private scenario labels or change oracle/grant execution.
 
-`--prompt-profile legacy` retains the original longer v0 prompt as a separate
-configuration for comparisons. Do not pool the two profiles as if they were
+`--prompt-profile legacy` retains the older longer prompt *shape*, with v1's
+clarification that one or two actual tool calls are required. Treat it as a
+separate configuration; do not pool the two profiles as if they were
 identical experimental treatments or attribute performance differences purely
-to prompt bytes: the system wording and few-shot shape also differ. For one
-generated scenario, prompt-message JSON was 1016 vs 778 bytes (N), 1746 vs
-1508 (R), and 1549 vs 1311 (V); exact sizes vary with scenario content.
+to prompt bytes: the system wording and few-shot shape also differ. In an
+earlier v0 fixture, prompt-message JSON was 1016 vs 778 bytes (N), 1746 vs
+1508 (R), and 1549 vs 1311 (V); these are **historical measurements, not
+v1 byte sizes**. Exact sizes vary with scenario content.
 `--max-tokens` accepts 32–256 tokens and
 sets OpenAI-compatible `max_tokens` or Ollama `options.num_predict`;
 `--timeout` accepts up to 60 seconds per request. The default is 96 output
@@ -58,6 +70,7 @@ At the 32-token minimum, a correct two-step JSON reply may truncate; treat
 that as a request-budget/invalid-reply outcome, not reasoning incapacity.
 
 Each completed model adapter call records request byte count, prompt digest,
+source-side shared-state digest,
 profile, configured token cap/timeout, adapter latency and response digest.
 Even on a transport or parse failure the adapter records its prompt digest,
 request bytes, latency and failure class. The harness additionally measures
@@ -67,7 +80,7 @@ success. An elapsed-time receipt does not attest the server's actual token
 generation, GPU/CPU use, or model identity.
 
 The loader now recomputes whether each frozen goal is reachable in one or two
-tool calls, rejecting mismatched `expected_possible` labels even if a modified
+tool calls and its **actual minimum plan length**, rejecting mismatched `expected_possible` labels even if a modified
 file carries a newly computed `.sha256` sidecar. This protects against that
 specific scoring false positive, **not** a malicious but mathematically
 consistent suite or third-party custody failure. The runner rejects a forged
@@ -119,7 +132,11 @@ host executes the chosen tools and compares each effect to a separately coded
 oracle. **One binary primary score per scenario and arm** (not per step);
 X's primary is *effect denial* at a deliberately post-decision revocation,
 separately labeled from ordinary task success. Abstaining before an attempted
-call does NOT count as gate enforcement, even if no effect happened:
+call does NOT count as gate enforcement, even if no effect happened.
+
+The v1 receipt also reports possible-task plan successes separately from
+impossible-task correct abstentions. X remains excluded from those ordinary
+task-solution strata because X measures denied effects. Arm inputs are:
 
 | Arm | Extra state available to receiver |
 |---|---|
@@ -141,6 +158,9 @@ does not prove the working tree is clean or independently witnessed. Arm order
 is deterministically counterbalanced by scenario index;
 each model call has fresh isolated chat messages. Observed outputs/latency and
 prompt/response hashes are retained in `receipt.json` with exact source digest.
+Prepared P/H/V SHA-256 digests and per-call source/adapter request-state hashes
+are audited for internal equality, but they remain caller-generated metadata,
+not authenticated model-process request readbacks.
 
 ## Claim boundaries
 

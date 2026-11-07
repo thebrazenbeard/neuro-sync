@@ -22,6 +22,7 @@ FEASIBILITY_CASES = 2
 TIMEOUT_SECONDS = 25
 MAX_TOKENS = 64
 PROMPT_PROFILE = "compact"
+EMPTY_STATE_SHA256 = hashlib.sha256(b"{}").hexdigest()
 
 
 def _hash_file(path: Path) -> str:
@@ -36,6 +37,8 @@ def _is_sha(value: object) -> bool:
 def _configured(receipt: dict, arms: tuple[str, ...], count: int) -> list[str]:
     """Check comparability and the *source-reported* local adapter evidence."""
     faults: list[str] = []
+    if receipt.get("experiment") != "neuro-sync-local-receiver-v1":
+        faults.append("wrong_experiment_schema_version")
     if receipt.get("evidence_class") != "LOCAL_HTTP_UNATTESTED":
         faults.append("not_local_http_evidence")
     if receipt.get("evaluation_scope") != "EXPLORATORY_INCOMPLETE":
@@ -147,6 +150,11 @@ def _records(receipt: dict, arms: tuple[str, ...], count: int) -> tuple[list[dic
         if type(elapsed) not in (int, float) or not 0 <= elapsed <= TIMEOUT_SECONDS * 1000 + 1000:
             faults.append("unbounded_or_bad_caller_latency")
         trace = row.get("transport_trace")
+        request_state_digest = row.get("request_shared_state_sha256")
+        if not _is_sha(request_state_digest):
+            faults.append("missing_request_shared_state_digest")
+        elif arm == "N" and request_state_digest != EMPTY_STATE_SHA256:
+            faults.append("no_state_arm_contains_external_state")
         if trace is not None:
             if not isinstance(trace, dict):
                 faults.append("invalid_transport_trace")
@@ -154,6 +162,7 @@ def _records(receipt: dict, arms: tuple[str, ...], count: int) -> tuple[list[dic
                   trace.get("max_tokens") != MAX_TOKENS or
                   trace.get("prompt_profile") != PROMPT_PROFILE or
                   not _is_sha(trace.get("prompt_sha256")) or
+                  trace.get("shared_state_sha256") != request_state_digest or
                   type(trace.get("request_bytes")) is not int or
                   not 0 < trace["request_bytes"] <= 100_000):
                 faults.append("unmatched_per_request_budget_or_trace")
@@ -166,6 +175,86 @@ def _records(receipt: dict, arms: tuple[str, ...], count: int) -> tuple[list[dic
     if len(observed_order) != count or any(
             not case.startswith(f"case-{i:02d}-") for i, case in enumerate(observed_order)):
         faults.append("case_sequence_not_frozen_order")
+    labels = receipt.get("case_oracle_labels")
+    labels_by_case = {}
+    if type(labels) is not list or len(labels) != count:
+        faults.append("missing_case_oracle_labels")
+    else:
+        for index, entry in enumerate(labels):
+            if (type(entry) is not dict or set(entry) !=
+                    {"case", "expected_possible", "oracle_minimum_steps"} or
+                    type(entry.get("case")) is not str or
+                    index >= len(observed_order) or entry["case"] != observed_order[index] or
+                    type(entry.get("expected_possible")) is not bool or
+                    (entry["oracle_minimum_steps"] is not None and
+                     (type(entry["oracle_minimum_steps"]) is not int or
+                      entry["oracle_minimum_steps"] not in (1, 2))) or
+                    (entry["expected_possible"] !=
+                     (entry["oracle_minimum_steps"] is not None))):
+                faults.append("invalid_case_oracle_labels")
+                continue
+            labels_by_case[entry["case"]] = entry
+        if count == CASE_COUNT and len(labels_by_case) == count:
+            if {str(k): sum(e["oracle_minimum_steps"] == k for e in labels_by_case.values())
+                    for k in (1, 2, None)} != {"1": 4, "2": 6, "None": 2}:
+                faults.append("unexpected_trial_stratum_balance")
+        if count in (FEASIBILITY_CASES, CASE_COUNT) and len(labels_by_case) == count:
+            if [labels_by_case[case]["oracle_minimum_steps"]
+                    for case in observed_order[:2]] != [1, 2]:
+                faults.append("invalid_feasibility_pair_strata")
+    if len(labels_by_case) == count:
+        for row in rows:
+            if (not isinstance(row, dict) or type(row.get("case")) is not str or
+                    row.get("case") not in labels_by_case):
+                continue
+            if row.get("success") is True:
+                possible = labels_by_case[row["case"]]["expected_possible"]
+                if (possible and row.get("abstained") is not False) or (
+                        not possible and row.get("abstained") is not True):
+                    faults.append("success_claims_wrong_solution_category")
+        expected_scoring = {}
+        for arm in arms:
+            if arm == "X":
+                continue
+            possible = [r for r in rows if isinstance(r, dict) and r.get("arm") == arm and
+                        type(r.get("case")) is str and r.get("case") in labels_by_case and
+                        labels_by_case[r["case"]]["expected_possible"]]
+            impossible = [r for r in rows if isinstance(r, dict) and r.get("arm") == arm and
+                          type(r.get("case")) is str and r.get("case") in labels_by_case and
+                          not labels_by_case[r["case"]]["expected_possible"]]
+            expected_scoring[arm] = {
+                "possible_cases": len(possible),
+                "possible_plans_solved": sum(r.get("success") is True for r in possible),
+                "impossible_cases": len(impossible),
+                "impossible_correct_abstentions": sum(
+                    r.get("success") is True and r.get("abstained") is True for r in impossible),
+            }
+        if receipt.get("scoring_by_arm") != expected_scoring:
+            faults.append("scoring_aggregate_inconsistent")
+    # Hashes are captured by the source runner at the model-request boundary
+    # and prepared independently for P/H/V before the call. This checks the
+    # self-reported receipt, not a signed server-side or process attestation.
+    reference = receipt.get("prepared_reference_state_sha256_by_case")
+    if type(reference) is not list or len(reference) != count:
+        faults.append("missing_prepared_reference_state_digest")
+    else:
+        for case_index, record in enumerate(reference):
+            if type(record) is not dict or set(record) != {"case", "state_sha256_by_arm"}:
+                faults.append("invalid_prepared_reference_state_digest")
+                continue
+            expected_case = observed_order[case_index] if case_index < len(observed_order) else None
+            arm_digests = record["state_sha256_by_arm"]
+            if (record["case"] != expected_case or type(arm_digests) is not dict or
+                    set(arm_digests) != {"P", "H", "V"} or
+                    any(not _is_sha(v) for v in arm_digests.values()) or
+                    len(set(arm_digests.values())) != 1):
+                faults.append("invalid_prepared_reference_state_digest")
+                continue
+            for row in rows:
+                if (isinstance(row, dict) and row.get("case") == expected_case and
+                        row.get("arm") in ("P", "H", "V") and
+                        row.get("request_shared_state_sha256") != arm_digests[row["arm"]]):
+                    faults.append("request_prepared_reference_state_mismatch")
     success_summary = receipt.get("success_by_arm")
     if (type(success_summary) is not dict or
             success_summary != {arm: sum(row.get("success") is True for row in rows
@@ -195,7 +284,7 @@ def evaluate(feasibility: dict | None, causal: dict | None = None) -> dict:
     limitations = [
         "SOURCE_CONSISTENCY_CHECK_ONLY: caller-supplied JSON is not host attestation",
         "Pilot donor is scripted; no model-to-model knowledge transfer is tested",
-        "P/H/V state-map parity exists in pilot source, not in signed per-call readbacks",
+        "P/H/V parity and request-state digests are source-reported, not authenticated server readbacks",
         "No independently authenticated receiver process, weights or cold restart",
     ]
     if feasibility is None:
