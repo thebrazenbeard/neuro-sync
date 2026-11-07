@@ -118,11 +118,16 @@ def propose_adapter_only_transfer(intent: dict) -> dict:
              "target map digest does not match proposed geometry")
 
     artifacts = _keys(intent["input_artifacts"], set(_ARTIFACTS), "artifact inventory")
+    sizes_by_sha: dict[str, int] = {}
     for role in _ARTIFACTS:
         entry = _keys(artifacts[role], {"sha256", "size_bytes"}, f"artifact {role}")
         _sha(entry["sha256"], f"artifact {role}")
         _require(type(entry["size_bytes"]) is int and entry["size_bytes"] > 0,
                  f"artifact {role} invalid size")
+        digest, size = entry["sha256"], entry["size_bytes"]
+        _require(digest not in sizes_by_sha or sizes_by_sha[digest] == size,
+                 f"artifact {role} size contradicts identical digest inventory")
+        sizes_by_sha[digest] = size
     bindings = {"donor_base": base["donor_base_weights_sha256"],
                 "recipient_base": base["recipient_base_weights_sha256"],
                 "adapter_weights": adapter["weights_sha256"],

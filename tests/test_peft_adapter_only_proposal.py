@@ -133,6 +133,14 @@ class AdapterOnlyProposalTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "alias"):
             propose_adapter_only_transfer(changed)
 
+    def test_identical_digest_requires_identical_declared_byte_size(self):
+        # Frozen donor/recipient base files are allowed identical digests; a
+        # caller cannot describe the same bytes with contradictory lengths.
+        changed = intent()
+        changed["input_artifacts"]["recipient_base"]["size_bytes"] += 12345
+        with self.assertRaisesRegex(ValueError, "size.*digest|digest.*size"):
+            propose_adapter_only_transfer(changed)
+
     def test_target_map_digest_matches_documented_peft_join_encoding(self):
         target = intent()["adapter"]["target_map"]
         reference = hashlib.sha256(json.dumps(target, sort_keys=True,
