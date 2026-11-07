@@ -24,9 +24,13 @@ def fake_ollama(*, oversized: bool = False, missing_model: bool = False,
                 empty: bool = False, truncated: bool = False,
                 unfinished: bool = False, bad_digest: bool = False,
                 bad_size: bool = False, changed_digest: bool = False,
-                wrong_response_model: bool = False):
+                wrong_response_model: bool = False,
+                initially_loaded: tuple[str, ...] = (),
+                foreign_after_chat: bool = False,
+                malformed_ps: bool = False):
     calls = []
-    state = {"loaded": False}
+    state = {"loaded": "qwen3.5:0.8b" in initially_loaded,
+             "chats": 0}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -51,8 +55,15 @@ def fake_ollama(*, oversized: bool = False, missing_model: bool = False,
                      "size": "not_number" if bad_size else 100}]
                 self.reply({"models": models})
             elif self.path == "/api/ps":
-                self.reply({"models": ([{"name": "qwen3.5:0.8b"}]
-                                       if state["loaded"] else [])})
+                loaded = ([{"name": "qwen3.5:0.8b"}]
+                          if state["loaded"] else [])
+                loaded.extend({"name": tag} for tag in initially_loaded
+                              if tag != "qwen3.5:0.8b")
+                if foreign_after_chat and state["chats"] > 0:
+                    loaded.append({"name": "other:active"})
+                if malformed_ps:
+                    loaded.append({"invalid": "missing name"})
+                self.reply({"models": loaded})
             else:
                 self.send_error(404)
 
@@ -64,6 +75,7 @@ def fake_ollama(*, oversized: bool = False, missing_model: bool = False,
                 self.send_error(404)
                 return
             state["loaded"] = True
+            state["chats"] += 1
             if oversized:
                 self.reply({"model": "qwen3.5:0.8b",
                             "message": {"content": "x" * probe_module.MAX_RESPONSE_BYTES},
@@ -159,6 +171,36 @@ class LocalSuccessorTests(unittest.TestCase):
     def test_missing_model_fails_closed(self):
         with fake_ollama(missing_model=True) as (url, calls):
             with self.assertRaisesRegex(probe_module.ProbeError, "not installed"):
+                probe_module.probe(endpoint=url, model="qwen3.5:0.8b",
+                                   execute=True)
+            self.assertFalse(any(item[0] == "POST" for item in calls))
+
+    def test_refuses_competing_model_before_any_inference(self):
+        with fake_ollama(initially_loaded=("qwen3.5:4b",)) as (url, calls):
+            with self.assertRaisesRegex(probe_module.ProbeError, "competing"):
+                probe_module.probe(endpoint=url, model="qwen3.5:0.8b",
+                                   execute=True)
+            self.assertFalse(any(item[0] == "POST" for item in calls))
+
+    def test_allows_only_target_loaded_without_eviction(self):
+        with fake_ollama(initially_loaded=("qwen3.5:0.8b",)) as (url, calls):
+            result = probe_module.probe(endpoint=url, model="qwen3.5:0.8b",
+                                        execute=True)
+            self.assertEqual("completed", result["status"])
+            self.assertTrue(result["requested_tag_preloaded_before"])
+            self.assertFalse(result["requested_tag_load_transition_observed"])
+            self.assertEqual(3, sum(item[0] == "POST" for item in calls))
+
+    def test_refuses_midrun_competitor_before_next_chat(self):
+        with fake_ollama(foreign_after_chat=True) as (url, calls):
+            with self.assertRaisesRegex(probe_module.ProbeError, "competing"):
+                probe_module.probe(endpoint=url, model="qwen3.5:0.8b",
+                                   execute=True)
+            self.assertEqual(1, sum(item[0] == "POST" for item in calls))
+
+    def test_refuses_malformed_process_inventory(self):
+        with fake_ollama(malformed_ps=True) as (url, calls):
+            with self.assertRaisesRegex(probe_module.ProbeError, "loaded-model"):
                 probe_module.probe(endpoint=url, model="qwen3.5:0.8b",
                                    execute=True)
             self.assertFalse(any(item[0] == "POST" for item in calls))
