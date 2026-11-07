@@ -147,6 +147,17 @@ class BindingTests(unittest.TestCase):
         b["target_map_sha256"] = target_map_digest(a)
         with self.assertRaises(ValueError):
             bind_peft_inspection_to_proposal(a, i, p, b)
+
+    def test_cannot_bind_forged_inspector_module_with_empty_segments(self):
+        # The actual #38 tensor inspector requires nonempty dotted module
+        # segments. A caller-supplied inspection dict cannot claim impossible
+        # records merely by recomputing the self-reported target-map digest.
+        for name in ("base_model..q_proj", ".base_model.q_proj"):
+            a, i, p, b = fixture()
+            a["lora_pairs"][0]["module"] = name
+            b["target_map_sha256"] = target_map_digest(a)
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                bind_peft_inspection_to_proposal(a, i, p, b)
         a, i, p, b = fixture()
         a["target_modules"] = ["q_proj\n"]
         a["lora_pairs"][0]["target"] = "q_proj\n"

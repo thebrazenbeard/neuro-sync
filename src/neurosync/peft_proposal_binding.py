@@ -17,7 +17,10 @@ SCHEMA = "NEUROSYNC_PEFT_PROPOSAL_BINDING_V1"
 CLAIM_SCHEMA = "NEUROSYNC_PEFT_ARTIFACT_BINDING_CLAIM_V1"
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _SIMPLE_MODULE = re.compile(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*\Z")
-_LORA_MODULE = re.compile(r"[A-Za-z0-9_.]+\Z")
+# Match the inspector's nonempty dotted tensor module path segments. Without
+# this, fabricated inspection maps could contain keys that its real parser
+# could never emit (such as 'base_model..q_proj').
+_LORA_MODULE = _SIMPLE_MODULE
 _INSPECTION_SCHEMA = "NEUROSYNC_PEFT_ARTIFACT_PREFLIGHT_V1"
 _INTENT_SCHEMA = "NEUROSYNC_TRANSFER_PROPOSAL_V1"
 _ENVELOPE_SCHEMA = "NEUROSYNC_TRAININGDAY_TRANSFER_ENVELOPE_V1"
