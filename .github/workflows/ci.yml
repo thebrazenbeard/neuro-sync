@@ -30,6 +30,12 @@ jobs:
       - name: Verify strict Trek SGD fixture
         run: python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
 
+      - name: Verify real Qwen receipt audit and offline source guards
+        run: |
+          test -f experiments/real-qwen-transfer/test_receipt_audit.py
+          test -f experiments/real-qwen-transfer/test_source_guards.py
+          python3 -m unittest discover -s experiments/real-qwen-transfer -p 'test_*.py' -v
+
       - name: Verify exact-base core contract
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
 
