@@ -10,8 +10,6 @@ dist/
 venv/
 
 # Credentials and host-specific settings
-.env
-.env.*
 !.env.example
 *.pem
 *.key
@@ -31,3 +29,5 @@ sealed-oracle/
 private-oracle/
 heldout-private/
 
+config.bat
+node_modules
