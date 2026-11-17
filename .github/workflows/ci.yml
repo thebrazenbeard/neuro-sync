@@ -24,6 +24,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Fail closed on executable editor-bootstrap or leaked dotenv ignores
+        run: |
+          test -f tests/editor_bootstrap_guard.py
+          python3 tests/editor_bootstrap_guard.py --root .
+          python3 -m unittest discover -s tests -p 'test_editor_bootstrap_guard.py' -v
+
       - name: Verify toy mechanics with system Python only
         run: python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v
 
