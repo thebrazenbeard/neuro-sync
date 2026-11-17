@@ -362,6 +362,8 @@ def _safe_failure_trace(trace: dict) -> dict:
             result[key] = value
         elif key == "prompt_profile" and value in ("compact", "legacy"):
             result[key] = value
+        elif key == "output_constraint" and value == "json_schema":
+            result[key] = value
         elif key == "outcome" and value in ("received_text", "transport_or_parse_failure"):
             result[key] = value
     return result
@@ -449,9 +451,28 @@ def _model_messages(task: dict, profile: str) -> list[dict]:
     ]
 
 
+def _typed_plan_response_format(handles: list[str]) -> dict:
+    """Experimental OpenAI-compatible schema: format constraint, never an oracle."""
+    if (type(handles) is not list or not 0 < len(handles) <= 64 or
+            any(type(h) is not str or not h for h in handles) or
+            len(set(handles)) != len(handles)):
+        raise ValueError("invalid candidate handles for schema constraint")
+    step = {"type": "object", "properties": {
+        "handle": {"type": "string", "enum": list(handles)},
+        "input": {"type": "string", "enum": ["initial", "previous"]}},
+        "required": ["handle", "input"], "additionalProperties": False}
+    schema = {"type": "object", "properties": {
+        "steps": {"type": "array", "items": step, "maxItems": 2},
+        "abstain": {"type": "boolean"}},
+        "required": ["steps", "abstain"], "additionalProperties": False}
+    return {"type": "json_schema", "json_schema": {
+        "name": "typed_plan", "strict": True, "schema": schema}}
+
+
 class LocalModelClient:
     def __init__(self, endpoint: str, backend: str, model: str, timeout: float = 30,
-                 max_tokens: int = 96, prompt_profile: str = "compact"):
+                 max_tokens: int = 96, prompt_profile: str = "compact",
+                 output_constraint: str = "none"):
         if type(model) is not str or not model:
             raise ValueError("model identifier required")
         if type(timeout) not in (int, float) or not 0 < timeout <= 60:
@@ -460,6 +481,11 @@ class LocalModelClient:
             raise ValueError("max_tokens must be 32..256")
         if prompt_profile not in {"compact", "legacy"}:
             raise ValueError("unknown prompt profile")
+        if type(output_constraint) is not str or output_constraint not in {"none", "json_schema"}:
+            raise ValueError("unknown output constraint")
+        if output_constraint == "json_schema" and backend != "openai":
+            raise ValueError("JSON schema constraint requires openai-compatible backend")
+        self.output_constraint = output_constraint
         self.url = local_endpoint(endpoint, backend)
         self.backend = backend
         self.model = model
@@ -479,6 +505,8 @@ class LocalModelClient:
                 "options": {"temperature": 0, "num_predict": self.max_tokens}} if self.backend == "ollama" else {
                     "model": self.model, "messages": messages, "stream": False,
                     "temperature": 0, "max_tokens": self.max_tokens}
+        if self.output_constraint == "json_schema":
+            body["response_format"] = _typed_plan_response_format(task["candidate_handles"])
         raw_body = canonical_json(body).encode("utf8")
         req = Request(self.url, data=raw_body, headers={"Content-Type": "application/json"},
                       method="POST")
@@ -487,6 +515,8 @@ class LocalModelClient:
                       "shared_state_sha256": sha(task["shared_external_state"]),
                       "max_tokens": self.max_tokens, "timeout_seconds": self.timeout,
                       "prompt_profile": self.prompt_profile}
+        if self.output_constraint == "json_schema":
+            base_trace["output_constraint"] = "json_schema"
         try:
             with self.opener.open(req, timeout=self.timeout) as response:
                 raw = response.read(1_000_001)
@@ -638,6 +668,8 @@ def run_suite(suite: dict, model_client, root: Path, *, model_evidence: dict,
     is_local_http_adapter = type(model_client) is LocalModelClient
     if model_evidence.get("real_endpoint", False) is not is_local_http_adapter:
         raise ValueError("real_endpoint flag disagrees with transport adapter")
+    if is_local_http_adapter and model_client.output_constraint != "none":
+        raise ValueError("experimental output constraint outside v1 run_suite protocol")
     chosen_cases = suite["cases"][:max_cases] if max_cases else suite["cases"]
     exploratory = len(chosen_cases) != len(suite["cases"]) or set(arms) != set(ARMS)
     root.mkdir(parents=True, exist_ok=False)
