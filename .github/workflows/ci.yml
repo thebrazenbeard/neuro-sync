@@ -36,6 +36,12 @@ jobs:
           test -f experiments/real-qwen-transfer/test_source_guards.py
           python3 -m unittest discover -s experiments/real-qwen-transfer -p 'test_*.py' -v
 
+      - name: Verify selective Qwen negative controls and GPU source guards (offline)
+        run: |
+          test -f experiments/real-qwen-selective/run_gpu.py
+          test -f experiments/real-qwen-selective/test_selective_protocol.py
+          python3 -m unittest discover -s experiments/real-qwen-selective -p 'test_*.py' -v
+
       - name: Verify exact-base core contract
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
 
