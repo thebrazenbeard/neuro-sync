@@ -24,11 +24,29 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Fail closed on executable editor-bootstrap or leaked dotenv ignores
+        run: |
+          test -f tests/editor_bootstrap_guard.py
+          python3 tests/editor_bootstrap_guard.py --root .
+          python3 -m unittest discover -s tests -p 'test_editor_bootstrap_guard.py' -v
+
       - name: Verify toy mechanics with system Python only
         run: python3 -m unittest discover -s experiments/toy-transfer -p 'test_*.py' -v
 
       - name: Verify strict Trek SGD fixture
         run: python3 -m unittest discover -s experiments/trek-transfer-v0 -p 'test_*.py' -v
+
+      - name: Verify real Qwen receipt audit and offline source guards
+        run: |
+          test -f experiments/real-qwen-transfer/test_receipt_audit.py
+          test -f experiments/real-qwen-transfer/test_source_guards.py
+          python3 -m unittest discover -s experiments/real-qwen-transfer -p 'test_*.py' -v
+
+      - name: Verify selective Qwen negative controls and GPU source guards (offline)
+        run: |
+          test -f experiments/real-qwen-selective/run_gpu.py
+          test -f experiments/real-qwen-selective/test_selective_protocol.py
+          python3 -m unittest discover -s experiments/real-qwen-selective -p 'test_*.py' -v
 
       - name: Verify exact-base core contract
         run: PYTHONPATH=src python3 -m unittest discover -s tests -p 'test_core_*.py' -v
