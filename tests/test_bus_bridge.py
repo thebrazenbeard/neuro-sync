@@ -1,5 +1,6 @@
 """Offline boundary tests; fake HTTP, no host session, secrets, or model API."""
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -63,7 +64,7 @@ class FixtureProposalLedger:
         self.seen = set()
         self.state = {}
         if self.replay_store is not None:
-            with sqlite3.connect(self.replay_store) as conn:
+            with closing(sqlite3.connect(self.replay_store)) as conn, conn:
                 conn.execute("CREATE TABLE IF NOT EXISTS received (event_id TEXT PRIMARY KEY)")
 
     def propose(self, delta, *, authorize_proposer):
@@ -71,7 +72,7 @@ class FixtureProposalLedger:
             raise PermissionError("independent authority refused")
         if self.replay_store is not None:
             try:
-                with sqlite3.connect(self.replay_store) as conn:
+                with closing(sqlite3.connect(self.replay_store)) as conn, conn:
                     conn.execute("INSERT INTO received(event_id) VALUES (?)", (delta.event_id,))
             except sqlite3.IntegrityError as exc:
                 raise ArtifactRejected("replayed event") from exc

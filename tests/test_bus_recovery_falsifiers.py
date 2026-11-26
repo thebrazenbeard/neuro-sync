@@ -7,6 +7,7 @@ model inference, external effect or production backup is touched.
 
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import tempfile
@@ -53,7 +54,7 @@ class RecoveryFalsifierTests(unittest.TestCase):
         )
 
     def high_water(self):
-        with sqlite3.connect(self.sidecar) as db:
+        with closing(sqlite3.connect(self.sidecar)) as db, db:
             row = db.execute(
                 "SELECT last_observed_epoch FROM clock_state WHERE singleton=1"
             ).fetchone()
@@ -126,7 +127,7 @@ class RecoveryFalsifierTests(unittest.TestCase):
         with self.assertRaisesRegex(ReadAccessDenied, "current use grant denied"):
             self.broker().execute_plan("once", "revoked", KEY, plan=PLAN)
         self.assertEqual(self.calls, [])
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             revoked = db.execute(
                 "SELECT revoked FROM clock_guarded_plan_grants WHERE grant_id='once'"
             ).fetchone()[0]

@@ -363,7 +363,9 @@ def apply_delta_bundle(
             # Floating subtraction can lose the exact trained value (e.g.
             # 1e20 -> 1.0). Full-strength transplant therefore copies the
             # separately hashed absolute target, not base + rounded delta.
-            if lam == 1.0:
+            if lam == 0.0:
+                values = original.values
+            elif lam == 1.0:
                 values = targets[name].values
             else:
                 values = tuple(base + lam * shift for base, shift in
@@ -436,13 +438,39 @@ def snapshot_to_json(snapshot: ModelSnapshot) -> str:
 
 def snapshot_from_json(encoded: str) -> ModelSnapshot:
     """Restore only the named receiver snapshot, not an executing model."""
-    decoded = json.loads(encoded)
-    if not isinstance(decoded, dict) or decoded.get("version") != SCHEMA_VERSION:
+    def unique_object_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_nonstandard_constant(value: str) -> object:
+        # Python accepts NaN/Infinity by default; these are not JSON numbers
+        # under RFC 8259 and create cross-decoder disagreement.
+        raise ValueError("nonstandard JSON numeric constant")
+
+    decoded = json.loads(encoded, object_pairs_hook=unique_object_keys,
+                         parse_constant=reject_nonstandard_constant)
+    # `True == 1` in Python, but a JSON boolean is not an integer protocol
+    # version. Reject ambiguous cross-language snapshots before constructing.
+    if (not isinstance(decoded, dict) or
+            type(decoded.get("version")) is not int or
+            decoded["version"] != SCHEMA_VERSION):
         raise ValueError("unsupported snapshot version")
+    if not isinstance(decoded.get("tensors"), list):
+        raise ValueError("malformed snapshot tensor list")
+    if set(decoded) != {"version", "model_id", "architecture_id", "schema_id", "tensors"}:
+        raise ValueError("unknown snapshot fields or missing required fields")
     records = []
     for item in decoded["tensors"]:
-        if not isinstance(item, dict) or not isinstance(item.get("values_hex"), list):
+        if not isinstance(item, dict) or set(item) != {"name", "shape", "values_hex"}:
+            raise ValueError("unknown tensor fields or missing required fields")
+        if not isinstance(item["shape"], list) or not isinstance(item["values_hex"], list):
             raise ValueError("malformed snapshot tensor")
+        if any(not isinstance(x, str) for x in item["values_hex"]):
+            raise ValueError("tensor hex values must be strings")
         tensor = Tensor(tuple(item["shape"]), tuple(float.fromhex(x) for x in item["values_hex"]))
         records.append((item["name"], tensor))
     return ModelSnapshot(

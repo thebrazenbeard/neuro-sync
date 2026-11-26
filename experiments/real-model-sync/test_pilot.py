@@ -1,11 +1,14 @@
 """Hostile stdlib *fixture* tests. No actual neural model in this suite."""
 
+from contextlib import closing
 import importlib.util
 import json
+import random
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 spec = importlib.util.spec_from_file_location("local_model_pilot", Path(__file__).with_name("pilot.py"))
@@ -99,6 +102,73 @@ class PilotTests(unittest.TestCase):
                          "abstain": False})
         self.assertEqual(pilot.parse_plan(ok, handles), (tuple(handles[:2]), False))
 
+    def test_parse_plan_rejects_duplicate_json_keys_even_if_last_value_valid(self):
+        handles = self.case["handles"]
+        ambiguous = ('{"steps":[],"abstain":false,"abstain":true}')
+        with self.assertRaises(ValueError):
+            pilot.parse_plan(ambiguous, handles)
+        ambiguous_step = ('{"steps":[{"handle":"' + handles[0] +
+                          '","handle":"' + handles[1] +
+                          '","input":"initial"}],"abstain":false}')
+        with self.assertRaises(ValueError):
+            pilot.parse_plan(ambiguous_step, handles)
+
+    def test_subset_n_only_does_not_materialize_unselected_bus_or_file_arms(self):
+        output = self.root / "n-only"
+        report = pilot.run_suite(
+            self.suite, fixture_solver, output,
+            model_evidence={"real_endpoint": False}, max_cases=1, arms=("N",),
+        )
+        self.assertEqual(report["arms_evaluated"], ["N"])
+        self.assertEqual(len(report["results"]), 1)
+        self.assertEqual(list(output.iterdir()), [],
+                         "N-only exploratory run must not create P/V authority fixtures")
+
+    def test_randomized_subset_artifacts_match_only_selected_arms(self):
+        rng = random.Random(640211)
+        masks = rng.sample(range(1, 1 << len(pilot.ARMS)), 20)
+        for mask in masks:
+            selected = tuple(arm for index, arm in enumerate(pilot.ARMS)
+                             if mask & (1 << index))
+            output = self.root / f"subset-{mask}"
+            with self.subTest(arms=selected):
+                report = pilot.run_suite(
+                    self.suite, fixture_solver, output,
+                    model_evidence={"real_endpoint": False}, max_cases=1,
+                    arms=selected,
+                )
+                self.assertEqual(set(report["arms_evaluated"]), set(selected))
+                self.assertEqual({r["arm"] for r in report["results"]}, set(selected))
+                case_id = self.case["id"]
+                expected = set()
+                if "P" in selected:
+                    expected.add(f"{case_id}-plain.json")
+                if "V" in selected:
+                    expected.update({f"{case_id}.sqlite3", f"{case_id}.host-test.json"})
+                self.assertEqual({path.name for path in output.iterdir()}, expected)
+
+    def test_cross_arm_consistency_never_disappears_under_optimized_python(self):
+        original = pilot._arm_state
+
+        def divergent_v(arm, case, root):
+            result = original(arm, case, root)
+            if arm == "V":
+                # A host fixture defect must abort before any model call,
+                # independently of whether Python optimizations are enabled.
+                return {"operations": {}}
+            return result
+
+        def forbidden_model_call(_):
+            raise AssertionError("divergent arms reached the model client")
+
+        with patch.object(pilot, "_arm_state", side_effect=divergent_v):
+            with self.assertRaisesRegex(ValueError, "divergent P/H/V"):
+                pilot.run_suite(
+                    self.suite, forbidden_model_call, self.root / "divergent",
+                    model_evidence={"real_endpoint": False}, max_cases=1,
+                    arms=("P", "H", "V"),
+                )
+
     def test_negative_revocation_checked_at_effect_boundary(self):
         h = self.case["handles"][0]
         grant = pilot.ToolGrant()
@@ -131,7 +201,7 @@ class PilotTests(unittest.TestCase):
         self.assertTrue(all(probe["pass"] for probe in receipt["probes"]))
         self.assertEqual(receipt["source_manifest_sha256"],
                          pilot.sha(receipt["source_manifest"]))
-        with sqlite3.connect(self.root / f"{self.case['id']}.sqlite3") as db:
+        with closing(sqlite3.connect(self.root / f"{self.case['id']}.sqlite3")) as db, db:
             event_json, = db.execute("SELECT event_json FROM events").fetchone()
         event = json.loads(event_json)
         self.assertIn(pilot.sha(receipt), json.dumps(event))
