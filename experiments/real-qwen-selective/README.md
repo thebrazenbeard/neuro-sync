@@ -62,8 +62,13 @@ A training receipt includes source revision, seed, arm, parameter count,
 optimizer loss history, input-manifest SHA-256 and adapter-file hashes.
 The fresh-process receiver checks the manifest, exact model revision,
 and allowlisted adapter filenames/hashes before loading weights.
-The evaluator stores its per-candidate scores and cautious screen
-verdict in the private output directory; model files never enter Git.
+The evaluator stores its per-candidate scores, checked weight/config digests,
+and cautious screen verdict in the private output directory; model files never
+enter Git. The paired diagnostic binds both digests to each training receipt
+and requires identical raw config digests within each true/shuffled pair,
+consistent with the frozen recipe. Older receipts lacking the evaluation config
+digest are incomplete for this paired diagnostic; do not backfill or treat
+matching self-reported digests as independent custody.
 The script refuses GPU allocation below 3,000 MiB free, caps its
 PyTorch CUDA allocation fraction at 85%, refuses preexisting output
 and evaluation receipt paths, and never imports a model on `--help`

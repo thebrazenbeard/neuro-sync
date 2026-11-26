@@ -82,5 +82,45 @@ class RunnerSourceGuards(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         validated_adapter_files(folder, corrupt)
 
+    def test_eval_receipt_binds_checked_config_without_model(self):
+        import hashlib
+        import json
+        import types
+        from unittest.mock import patch
+        import run_gpu as runner
+        from test_paired_receipts import rows
+        for mutate in (False, True):
+            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as root:
+                folder=Path(root)
+                config=folder/"adapter_config.json"
+                config.write_bytes(b"synthetic-config")
+                weights=folder/"adapter_model.safetensors"
+                weights.write_bytes(b"synthetic-weights")
+                files={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in (config,weights)}
+                train,suite=runner.generate_suites(109)
+                receipt={"source":runner.SOURCE,"revision":runner.REVISION,"seed":109,"arm":"true",
+                         "train_manifest_sha256":hashlib.sha256(runner.canonical(train).encode()).hexdigest(),
+                         "adapter_files_sha256":files}
+                (folder/"train-receipt.json").write_text(json.dumps(receipt),encoding="utf8")
+                torch=types.SimpleNamespace(manual_seed=lambda _:None,set_num_threads=lambda _:None)
+                base,adapted=object(),object()
+                peft=types.SimpleNamespace(PeftModel=types.SimpleNamespace(
+                    from_pretrained=lambda *a,**k:adapted))
+                def score(model,*unused):
+                    if mutate and model is adapted:
+                        config.write_bytes(b"changed-config")
+                    return rows(suite,8 if model is adapted else 2,4)
+                with patch.dict(sys.modules,{"torch":torch,"peft":peft}), \
+                        patch.object(runner,"load_base",return_value=(base,object(),torch)), \
+                        patch.object(runner,"score_model",side_effect=score):
+                    if mutate:
+                        with self.assertRaisesRegex(ValueError,"POST_EVAL_ADAPTER_DIGEST_MISMATCH"):
+                            runner.evaluate(types.SimpleNamespace(seed=109,arm="true"),folder)
+                        self.assertFalse((folder/"eval-receipt.json").exists())
+                    else:
+                        runner.evaluate(types.SimpleNamespace(seed=109,arm="true"),folder)
+                        observed=json.loads((folder/"eval-receipt.json").read_text(encoding="utf8"))
+                        self.assertEqual(observed.get("adapter_config_sha256"),files["adapter_config.json"])
+
 if __name__ == "__main__":
     unittest.main()

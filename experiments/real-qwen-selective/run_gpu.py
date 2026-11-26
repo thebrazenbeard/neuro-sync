@@ -212,6 +212,7 @@ def evaluate(args, out):
     result["host_reboot_proven"] = False
     result["source_revision"] = REVISION
     result["adapter_sha256"] = files["adapter_model.safetensors"]
+    result["adapter_config_sha256"] = files["adapter_config.json"]
     result["raw_rows"] = {"base": base_rows, "adapted": adapted_rows}
     for name, path in checked.items():
         if sha_file(path) != files[name]:

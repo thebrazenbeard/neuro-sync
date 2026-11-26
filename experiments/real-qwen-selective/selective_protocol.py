@@ -214,6 +214,8 @@ def review_paired_receipts(records):
                      for v in files.values()), "invalid adapter map")
             need(e.get("adapter_sha256") == files["adapter_model.safetensors"],
                  "adapter digest mismatch")
+            need(e.get("adapter_config_sha256") == files["adapter_config.json"],
+                 "adapter config digest mismatch")
             raw = e.get("raw_rows")
             need(type(raw) is dict and set(raw) == {"base", "adapted"},
                  "missing paired raw scores")
@@ -225,8 +227,13 @@ def review_paired_receipts(records):
         need(t["trainable_parameters"] == s["trainable_parameters"],
              "paired parameter count mismatch")
         need(ba == bb, "paired baseline predictions differ")
-        if (t["adapter_files_sha256"]["adapter_model.safetensors"] ==
-                s["adapter_files_sha256"]["adapter_model.safetensors"]):
+        tf, sf = t["adapter_files_sha256"], s["adapter_files_sha256"]
+        # The frozen true/shuffled recipe differs only in labels. Require
+        # identical config bytes, not just a matching trainable parameter count.
+        need(tf["adapter_config.json"] == sf["adapter_config.json"],
+             "paired adapter config mismatch")
+        if (tf["adapter_model.safetensors"], tf["adapter_config.json"]) == (
+                sf["adapter_model.safetensors"], sf["adapter_config.json"]):
             need(pa == pb, "same adapter digest has divergent predictions")
         by_seed[seed] = {
             "true_screen": a["screen_pass"],

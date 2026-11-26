@@ -34,6 +34,7 @@ def fixture():
                          "losses":[1.0]*40,"train_manifest_sha256":digest,
                          "adapter_files_sha256":{"adapter_model.safetensors":adapter,"adapter_config.json":"a"*64}},
                 "eval":{"source_revision":REV,"seed":seed,"arm":arm,"adapter_sha256":adapter,
+                        "adapter_config_sha256":"a"*64,
                         "screen_pass":True,"raw_rows":{"base":rows(suite,2,2),"adapted":rows(suite,8 if arm=="true" else 2,4)}}}
         records.append(record)
     return records
@@ -97,6 +98,19 @@ class PairedReviewTests(unittest.TestCase):
                     rec["shuffled"]["eval"]["adapter_sha256"]=d
                 if mode=="map":rec["true"]["train"]["adapter_files_sha256"]["../file"]="a"*64
                 with self.assertRaises(ValueError):review_paired_receipts(records)
+    def test_pair_requires_exact_config_binding(self):
+        for mode in ("missing_eval", "mismatched_eval", "different_pair"):
+            with self.subTest(mode=mode):
+                records=fixture(); item=records[0]["shuffled"]
+                if mode=="missing_eval":
+                    del item["eval"]["adapter_config_sha256"]
+                elif mode=="mismatched_eval":
+                    item["eval"]["adapter_config_sha256"]="b"*64
+                else:
+                    item["train"]["adapter_files_sha256"]["adapter_config.json"]="b"*64
+                    item["eval"]["adapter_config_sha256"]="b"*64
+                with self.assertRaisesRegex(ValueError, "config"):
+                    review_paired_receipts(records)
     def test_missing_score_row(self):
         records=fixture();records[0]["true"]["eval"]["raw_rows"]["adapted"].pop()
         with self.assertRaises(ValueError):review_paired_receipts(records)
