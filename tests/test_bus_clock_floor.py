@@ -6,6 +6,7 @@ host clock authenticity, or security against a direct SQLite writer.
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -69,7 +70,7 @@ class ClockFloorTests(unittest.TestCase):
         return self.clock[0]
 
     def high_water(self):
-        with sqlite3.connect(str(self.path) + ".clock.sqlite3") as db:
+        with closing(sqlite3.connect(str(self.path) + ".clock.sqlite3")) as db, db:
             row = db.execute(
                 "SELECT last_observed_epoch FROM clock_state WHERE singleton=1"
             ).fetchone()
@@ -106,7 +107,7 @@ class ClockFloorTests(unittest.TestCase):
         self.clock[0] = 150
         with self.assertRaisesRegex(ReadAccessDenied, "clock.*backward"):
             self.broker().grant_plan("new", KEY, plan=self.plan, expires_at_epoch=300)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM clock_guarded_plan_grants").fetchone()[0], 1)
         self.assertEqual(self.calls, [])
 
@@ -143,7 +144,7 @@ class ClockFloorTests(unittest.TestCase):
             owner.execute_plan("once", "expired", KEY, plan=self.plan)
         self.clock[0] = 150
         self.broker().revoke("once")
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             revoked = db.execute(
                 "SELECT revoked FROM clock_guarded_plan_grants WHERE grant_id='once'"
             ).fetchone()[0]
@@ -153,7 +154,7 @@ class ClockFloorTests(unittest.TestCase):
         owner = self.broker()
         digest = hashlib.sha256(json.dumps(self.plan, sort_keys=True, ensure_ascii=False,
                                             allow_nan=False, separators=(",", ":")).encode()).hexdigest()
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute(
                 "INSERT INTO plan_grants(grant_id,principal,target,session,state_key,expires,"
                 "plan_sha256,planned_state_sha256,plan_handler_artifact_sha256,"
@@ -166,7 +167,7 @@ class ClockFloorTests(unittest.TestCase):
         with self.assertRaises(ReadAccessDenied):
             owner.grant_plan("historic", KEY, plan=self.plan, expires_at_epoch=300)
         self.assertIsNone(owner.attempt("old-attempt"))
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plan_grants WHERE grant_id='historic'").fetchone()[0], 1)
             self.assertEqual(db.execute("SELECT COUNT(*) FROM clock_guarded_plan_grants WHERE grant_id='historic'").fetchone()[0], 0)
 
@@ -281,7 +282,7 @@ class ClockFloorTests(unittest.TestCase):
         with self.assertRaises(ReadAccessDenied):
             owner.grant_plan("new", KEY, plan=self.plan, expires_at_epoch=200)
         self.assertEqual(self.high_water(), 250)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute(
                 "SELECT COUNT(*) FROM clock_guarded_plan_grants"
             ).fetchone()[0], 0)
@@ -290,7 +291,7 @@ class ClockFloorTests(unittest.TestCase):
         owner = self.broker()
         owner.grant_plan("old", KEY, plan=self.plan, expires_at_epoch=275)
         owner.grant_plan("other", KEY, plan=self.plan, expires_at_epoch=400)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("CREATE TRIGGER reject_claim BEFORE UPDATE ON clock_guarded_plan_grants "
                        "WHEN OLD.grant_id='other' BEGIN "
                        "SELECT RAISE(ABORT,'injected claim write failure'); END")
@@ -336,7 +337,7 @@ class ClockFloorTests(unittest.TestCase):
     def test_ready_corrupt_or_mismatched_sidecar_fails_closed(self):
         owner = self.broker()
         owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
-        with sqlite3.connect(self.sidecar_path) as db:
+        with closing(sqlite3.connect(self.sidecar_path)) as db, db:
             db.execute("UPDATE clock_state SET binding_uuid='incorrect' WHERE singleton=1")
         self.clock[0] = 150
         with self.assertRaisesRegex(ReadAccessDenied, "binding mismatch"):
@@ -352,7 +353,7 @@ class ClockFloorTests(unittest.TestCase):
     def test_null_floor_with_existing_v2_grants_does_not_reinitialize(self):
         owner = self.broker()
         owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
-        with sqlite3.connect(self.sidecar_path) as db:
+        with closing(sqlite3.connect(self.sidecar_path)) as db, db:
             db.execute("UPDATE clock_state SET last_observed_epoch=NULL WHERE singleton=1")
         self.clock[0] = 150
         with self.assertRaisesRegex(ReadAccessDenied, "high-water missing"):
@@ -364,7 +365,7 @@ class ClockFloorTests(unittest.TestCase):
         owner = self.broker()
         owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
         for invalid in (float("-inf"), float("inf"), "not-a-clock"):
-            with sqlite3.connect(self.sidecar_path) as db:
+            with closing(sqlite3.connect(self.sidecar_path)) as db, db:
                 db.execute("UPDATE clock_state SET last_observed_epoch=? WHERE singleton=1",
                            (invalid,))
             self.clock[0] = 150
@@ -375,12 +376,12 @@ class ClockFloorTests(unittest.TestCase):
     def test_missing_binding_with_existing_v2_grant_cannot_bootstrap(self):
         owner = self.broker()
         owner.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=300)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DELETE FROM plan_clock_binding")
         self.clock[0] = 150
         with self.assertRaisesRegex(ReadAccessDenied, "binding unavailable"):
             self.broker().execute_plan("once", "attempt", KEY, plan=self.plan)
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM plan_clock_binding").fetchone()[0], 0)
 
     def test_known_limitation_same_uuid_sidecar_snapshot_rollback_can_revive(self):
@@ -400,11 +401,11 @@ class ClockFloorTests(unittest.TestCase):
 
     def test_pending_zero_grant_bootstrap_can_finish_without_old_sidecar(self):
         self.broker()  # freshly bound empty authority
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE plan_clock_binding SET status='PENDING' WHERE singleton=1")
         self.sidecar_path.unlink()
         recovered = self.broker()
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             self.assertEqual(db.execute(
                 "SELECT status FROM plan_clock_binding WHERE singleton=1"
             ).fetchone()[0], "READY")

@@ -1,5 +1,6 @@
 """Actual adversarial stdlib tests for the source-only zero-weight StateBus."""
 
+from contextlib import closing
 from dataclasses import replace
 import hashlib
 import json
@@ -301,7 +302,7 @@ class StateBusCoreTests(unittest.TestCase):
         projected = self.ledger.project("node-B", "session-A")
         projected["facts.alpha"]["n"].append(999)
         self.assertEqual(self.ledger.project("node-B", "session-A"), {"facts.alpha": {"n": [1, 2]}})
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             with self.assertRaises(sqlite3.DatabaseError):
                 db.execute("UPDATE events SET content_hash=? WHERE event_offset=1", ("0" * 64,))
             db.execute("DROP TRIGGER events_no_update")
@@ -312,7 +313,7 @@ class StateBusCoreTests(unittest.TestCase):
 
     def test_hash_chain_detects_changed_session_index_metadata(self):
         self.complete(delta(value="not-for-session-B"))
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DROP TRIGGER events_no_update")
             db.execute("UPDATE events SET session_id='session-B' WHERE event_offset=1")
         self.assertFalse(self.ledger.verify_chain())

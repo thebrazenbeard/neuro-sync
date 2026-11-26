@@ -5,6 +5,7 @@ No local/remote LLM is invoked; all tests use fresh temporary SQLite files.
 
 from __future__ import annotations
 
+from contextlib import closing
 import importlib.util
 import hashlib
 import json
@@ -47,7 +48,7 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
                          expected_digest)
         self.assertEqual(self.report["allowed"]["receipt_binding"],
                          "host_asserted_unverified")
-        with sqlite3.connect(self.root / "authority.sqlite3") as connection:
+        with closing(sqlite3.connect(self.root / "authority.sqlite3")) as connection, connection:
             rows = connection.execute(
                 "SELECT invocation_id, status FROM attempts ORDER BY invocation_id"
             ).fetchall()
@@ -82,7 +83,7 @@ class ActualEffectBrokerPilotTests(unittest.TestCase):
         self.assertEqual(self.report["replayed_after_reopen"], {
             "error": "ReadAccessDenied", "effects_total": 1,
         })
-        with sqlite3.connect(self.root / "authority.sqlite3") as connection:
+        with closing(sqlite3.connect(self.root / "authority.sqlite3")) as connection, connection:
             count = connection.execute("SELECT COUNT(*) FROM attempts").fetchone()[0]
         self.assertEqual(count, 2)
 

@@ -38,3 +38,13 @@ stale key-revision write. It raises on
 any unexpected outcome and prints a JSON receipt labeled
 `LOCAL_TEST_SOURCE_ONLY`; the process exit status does **not** attest any
 remote runtime or model behavior.
+
+The broker's foreign-principal isolation probe is performed **before** the
+rightful principal first uses its grant. The rightful principal must then use
+that same grant successfully. Legacy grants in this test are **multi-use**;
+only invocation IDs have replay protection. The earlier probe order was less
+direct, but reuse of the grant alone did not create a replay false positive.
+An explicit negative-control test temporarily removes principal scoping and
+confirms the study detects unauthorized foreign execution. This remains a
+same-process synthetic test, not authenticated principal isolation across
+operating-system identities.

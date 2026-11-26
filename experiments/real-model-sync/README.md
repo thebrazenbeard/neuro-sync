@@ -28,6 +28,8 @@ For a small bounded host smoke check before committing to 84 potential model
 requests, append `--max-cases 1 --arms N,V,P,H` to `run`. The receipt will say
 `EXPLORATORY_INCOMPLETE`: this is not an acceptance trial and may be biased by
 its first scenario. Full 12×7 comparisons require explicit workload readiness.
+Only requested arms create their local test artifacts; an `--arms N` smoke
+does not unnecessarily create a P file or V SQLite authority fixture.
 
 ### Bounded latency and prompt profiles
 
@@ -65,6 +67,8 @@ request bytes, latency and failure class. The harness additionally measures
 metadata. Failures execute **zero** tools and do not count as governance
 success. An elapsed-time receipt does not attest the server's actual token
 generation, GPU/CPU use, or model identity.
+Ambiguous model JSON with duplicate keys (including nested plan-step fields)
+is rejected as an invalid reply rather than silently accepting the last value.
 
 The loader now recomputes whether each frozen goal is reachable in one or two
 tool calls, rejecting mismatched `expected_possible` labels even if a modified

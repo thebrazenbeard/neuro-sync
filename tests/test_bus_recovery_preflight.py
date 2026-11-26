@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import sqlite3
 import subprocess
@@ -40,7 +41,7 @@ class PairPreflightTests(unittest.TestCase):
                           expires_at_epoch=500.0)
 
     def _change_floor(self, value):
-        with sqlite3.connect(self.sidecar) as db:
+        with closing(sqlite3.connect(self.sidecar)) as db, db:
             db.execute("UPDATE clock_state SET last_observed_epoch=? WHERE singleton=1",
                        (value,))
 
@@ -75,13 +76,13 @@ class PairPreflightTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
     def test_mismatched_sidecar_binding_blocks(self):
-        with sqlite3.connect(self.sidecar) as db:
+        with closing(sqlite3.connect(self.sidecar)) as db, db:
             db.execute("UPDATE clock_state SET binding_uuid='wrong' WHERE singleton=1")
         report = inspect_clock_pair(self.path)
         self.assertEqual(report.classification, "BLOCKED")
 
     def test_incomplete_real_broker_schema_blocks(self):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("DROP TABLE clock_guarded_plan_grants")
             db.execute("CREATE TABLE clock_guarded_plan_grants(grant_id TEXT)")
         report = inspect_clock_pair(self.path)
@@ -134,7 +135,7 @@ class PairPreflightTests(unittest.TestCase):
                             for f in report.findings), report.findings)
 
     def test_pending_main_binding_blocks(self):
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.execute("UPDATE plan_clock_binding SET status='PENDING' WHERE singleton=1")
         self.assertEqual(inspect_clock_pair(self.path).classification, "BLOCKED")
 

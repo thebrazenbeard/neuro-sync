@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -140,7 +141,7 @@ class PlanBoundEffectTests(unittest.TestCase):
         broker = self.broker()
         broker.grant_plan("once", KEY, plan=self.plan, expires_at_epoch=200)
         # Previous binaries know `grants` and/or `plan_grants`, not v2.
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             visible = db.execute("SELECT 1 FROM grants WHERE grant_id='once'").fetchone()
             self.assertIsNone(visible)
             self.assertIsNotNone(db.execute(
@@ -309,7 +310,7 @@ class PlanBoundEffectTests(unittest.TestCase):
 
     def test_legacy_database_migrates_without_destroying_history(self):
         # These are the exact legacy tables as created on main before plan mode.
-        with sqlite3.connect(self.path) as db:
+        with closing(sqlite3.connect(self.path)) as db, db:
             db.executescript("""
                 CREATE TABLE grants (
                     grant_id TEXT NOT NULL, principal TEXT NOT NULL,
