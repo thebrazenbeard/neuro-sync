@@ -112,6 +112,51 @@ class PEFTPreflightTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     inspect_peft_lora_artifacts(self.root)
 
+    def test_rejects_unqualified_lora_config_extensions(self):
+        variants = (
+            {"init_lora_weights": "olora"}, {"init_lora_weights": False},
+            {"lora_bias": True}, {"ensure_weight_tying": True},
+            {"lora_dropout": 1.1}, {"lora_dropout": -0.1},
+            {"lora_dropout": True}, {"lora_dropout": "0.1"},
+            {"target_parameters": ["weight"]}, {"layers_to_transform": [0]},
+            {"exclude_modules": ["v_proj"]}, {"layers_pattern": "layers"},
+            {"eva_config": {"rho": 2}}, {"corda_config": {"corda_method": "ipm"}},
+            {"lora_ga_config": {"example": 1}}, {"velora_config": {"example": 1}},
+            {"alora_invocation_tokens": [1]}, {"monteclora_config": {"example": 1}},
+            {"use_bdlora": True}, {"arrow_config": {"example": 1}},
+            {"kasa_config": {"example": 1}}, {"megatron_config": {"example": 1}},
+        )
+        for update in variants:
+            with self.subTest(update=update):
+                self.write_artifacts(config_text=json.dumps({**self.config, **update}))
+                with self.assertRaisesRegex(ValueError, "initialization|bias|weight tying|dropout|extension"):
+                    inspect_peft_lora_artifacts(self.root)
+
+    def test_accepts_explicit_ordinary_lora_defaults_and_dropout(self):
+        for rate in (0.0, 0.1):
+            with self.subTest(rate=rate):
+                self.write_artifacts(config_text=json.dumps({**self.config,
+                    "init_lora_weights": True, "lora_bias": False,
+                    "ensure_weight_tying": False, "lora_dropout": rate,
+                    "target_parameters": None, "exclude_modules": None,
+                    "layers_to_transform": None, "layers_pattern": None,
+                }))
+                result = inspect_peft_lora_artifacts(self.root)
+                self.assertTrue(result["candidate_only"])
+                self.assertFalse(result["trainingday_ready"])
+                self.assertEqual(result["lora_pairs"][0]["target"], "q_proj")
+
+    def test_rejects_empty_dotted_tensor_module_segments(self):
+        for prefix in (".q_proj", "base..q_proj", "base.q_proj."):
+            with self.subTest(prefix=prefix):
+                header = {
+                    prefix + ".lora_A.weight": self.tensors[self.a],
+                    prefix + ".lora_B.weight": self.tensors[self.b],
+                }
+                self.write_artifacts(header=header)
+                with self.assertRaisesRegex(ValueError, "non-standard|module"):
+                    inspect_peft_lora_artifacts(self.root)
+
     @unittest.skipUnless(os.name == "posix", "POSIX symlink fixture")
     def test_refuses_symlinked_ancestor_directory(self):
         alias = self.root.parent / (self.root.name + "-alias-parent")
