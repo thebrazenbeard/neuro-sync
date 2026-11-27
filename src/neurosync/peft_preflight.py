@@ -118,6 +118,15 @@ def _hash_fd(fd: int, size: int) -> str:
     return digest.hexdigest()
 
 
+def _finite_number(value) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _read_config(fd: int, size: int) -> dict:
     config = _strict_json(_read_fd_range(fd, 0, size))
     if config.get("peft_type") != "LORA":
@@ -132,7 +141,7 @@ def _read_config(fd: int, size: int) -> dict:
     if type(rank) is not int or not 0 < rank <= 16384:
         raise ValueError("positive integer LoRA rank required")
     alpha = config.get("lora_alpha")
-    if type(alpha) not in (int, float) or not math.isfinite(alpha) or alpha <= 0:
+    if not _finite_number(alpha) or alpha <= 0:
         raise ValueError("finite positive LoRA alpha required")
     targets = config.get("target_modules")
     if (type(targets) is not list or not targets or
@@ -151,19 +160,19 @@ def _read_config(fd: int, size: int) -> dict:
             "ensure_weight_tying", False) is not False:
         raise ValueError("extra LoRA bias or weight tying requires a separate verifier")
     dropout = config.get("lora_dropout", 0.0)
-    if (type(dropout) not in (int, float) or not math.isfinite(dropout) or
+    if (not _finite_number(dropout) or
             not 0 <= dropout < 1):
         raise ValueError("LoRA dropout must be a finite rate in [0,1)")
     # Specialized variants require their own independently reviewed math and
     # keys. Reject rather than silently treating their weights as ordinary LoRA.
-    for flag in ("use_dora", "use_rslora", "use_qalora"):
-        if config.get(flag):
-            raise ValueError(f"unsupported PEFT variant: {flag}")
+    for flag in ("use_dora", "use_rslora", "use_qalora", "use_bdlora"):
+        if config.get(flag, False) is not False:
+            raise ValueError(f"unsupported PEFT variant or extension: {flag}")
     for field in ("modules_to_save", "rank_pattern", "alpha_pattern", "loftq_config",
                   "trainable_token_indices", "layer_replication", "target_parameters",
                   "exclude_modules", "layers_to_transform", "layers_pattern",
                   "eva_config", "corda_config", "lora_ga_config", "velora_config",
-                  "alora_invocation_tokens", "monteclora_config", "use_bdlora",
+                  "alora_invocation_tokens", "monteclora_config",
                   "arrow_config", "kasa_config", "megatron_config"):
         if config.get(field):
             raise ValueError(f"unsupported PEFT extension: {field}")
